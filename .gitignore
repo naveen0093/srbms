@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Cloudflare Pages / Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Supabase Local Cache & Branches
+supabase/.temp/
+supabase/.branches/
+seed.test.sql
+supabase/seed.test.sql
+
+# Logs & System Files
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE & Editor Directories
+.idea/
+.vscode/
+
+# Backup, Scratch & Temporary Files
+*.bak
+*.orig
+*.xlsx
+*.csv
+scratch/
