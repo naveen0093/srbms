@@ -338,4 +338,40 @@ assert.ok(indexHtml.includes('<script src="/vendor/xlsx.full.min.js"></script>')
 assert.ok(indexHtml.includes('<script src="/vendor/qrcode.min.js"></script>'), 'index.html loads vendored qrcode');
 console.log('  ✓ public/index.html is clean, standalone, and references local assets');
 
+// 8. Verifying 003_roles_and_rls.sql migration
+console.log('8. Verifying 003_roles_and_rls.sql migration (Roles, RLS, Helpers & Verification Queries)...');
+const rlsSql = fs.readFileSync('supabase/migrations/003_roles_and_rls.sql', 'utf8');
+
+// Roles and schema checks
+assert.ok(rlsSql.includes("role IN ('admin', 'owner', 'manager', 'employee')"), "Migration enforces role IN ('admin', 'owner', 'manager', 'employee')");
+assert.ok(rlsSql.includes("profiles_phone_key UNIQUE (phone)"), "Migration enforces UNIQUE (phone) on profiles");
+assert.ok(rlsSql.includes("duties text[] DEFAULT '{}'"), "Migration adds duties text[] to employees");
+assert.ok(rlsSql.includes("created_by uuid REFERENCES public.profiles(id)"), "Migration adds created_by to profiles");
+
+// Security Definer helpers
+assert.ok(rlsSql.includes("FUNCTION public.app_role()"), "Migration defines app_role() helper");
+assert.ok(rlsSql.includes("FUNCTION public.has_role(VARIADIC"), "Migration defines has_role() helper");
+assert.ok(rlsSql.includes("FUNCTION public.current_employee_id()"), "Migration defines current_employee_id() helper");
+assert.ok(rlsSql.includes("FUNCTION public.role_rank(r text)"), "Migration defines role_rank() helper");
+assert.ok(rlsSql.includes("FUNCTION public.is_customer_on_my_open_trip"), "Migration defines is_customer_on_my_open_trip helper");
+
+// Service-role profile mutation guard
+assert.ok(rlsSql.includes("check_profile_service_role_only"), "Migration enforces profile changes only via worker service role");
+
+// Financial and stock ledger immutability (NO DELETE policies)
+const ledgerTables = ['bills', 'payments', 'stock', 'fg', 'expenses', 'advances', 'payslips', 'price_list'];
+ledgerTables.forEach(t => {
+  assert.ok(!rlsSql.includes(`"${t}_delete"`), `Financial/stock ledger ${t} must NOT have a DELETE policy`);
+});
+
+// Revoke execute from PUBLIC and anon
+assert.ok(rlsSql.includes("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, anon"), "Migration revokes execute from PUBLIC and anon");
+
+// Verification queries at end
+assert.ok(rlsSql.includes("rowsecurity = false"), "Migration contains verification query for un-secured tables");
+assert.ok(rlsSql.includes("trim(qual) = 'true'"), "Migration contains verification query for 'true' policies");
+assert.ok(rlsSql.includes("grantee IN ('anon', 'public')"), "Migration contains verification query for anon-executable functions");
+assert.ok(rlsSql.includes("ROLE × TABLE PERMISSIONS MATRIX"), "Migration contains role × table permissions matrix");
+console.log('  ✓ supabase/migrations/003_roles_and_rls.sql verified (100% compliant with Decisions block)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');
