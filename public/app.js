@@ -32,6 +32,142 @@ var ic=function(n,extra){return '<svg viewBox="0 0 24 24" fill="none" stroke="cu
 
 /* ---------- data ---------- */
 var KEY='aquaflow-bms-v1';
+/* ---------- Cafe Module Storage Isolation (FROZEN) ---------- */
+var KEY_CAFE = 'larven-cafe-v1';
+var CAFE_DATA = null;
+function initCafeStorage() {
+  try {
+    CAFE_DATA = JSON.parse(localStorage.getItem(KEY_CAFE) || 'null');
+  } catch(e) { CAFE_DATA = null; }
+  if (!CAFE_DATA) {
+    CAFE_DATA = {
+      cafeSales: (S && S.cafeSales) || [],
+      cafePurchases: (S && S.cafePurchases) || [],
+      cafeStockMoves: (S && S.cafeStockMoves) || [],
+      cafeExpenses: (S && S.cafeExpenses) || [],
+      cafeEmployees: (S && S.cafeEmployees) || []
+    };
+  }
+  // Bind S cafe fields to CAFE_DATA for zero-change compatibility with frozen cafe code
+  S.cafeSales = CAFE_DATA.cafeSales;
+  S.cafePurchases = CAFE_DATA.cafePurchases;
+  S.cafeStockMoves = CAFE_DATA.cafeStockMoves;
+  S.cafeExpenses = CAFE_DATA.cafeExpenses;
+  S.cafeEmployees = CAFE_DATA.cafeEmployees;
+}
+function saveCafe() {
+  if (!CAFE_DATA) return;
+  CAFE_DATA.cafeSales = S.cafeSales;
+  CAFE_DATA.cafePurchases = S.cafePurchases;
+  CAFE_DATA.cafeStockMoves = S.cafeStockMoves;
+  CAFE_DATA.cafeExpenses = S.cafeExpenses;
+  CAFE_DATA.cafeEmployees = S.cafeEmployees;
+  try {
+    localStorage.setItem(KEY_CAFE, JSON.stringify(CAFE_DATA));
+  } catch(e) {}
+}
+
+/* ---------- Roles, Permissions & Hierarchy ---------- */
+var SYSTEM_ROLES = ['admin', 'owner', 'manager', 'employee'];
+var DUTY_TAGS = ['delivery', 'production', 'godown'];
+var CURRENT_ROLE = 'owner';
+var CURRENT_PROFILE = { id: 'owner-1', full_name: 'Muni Prasad', role: 'owner', employee_id: null };
+
+function setCurrentRole(r) {
+  CURRENT_ROLE = r;
+}
+function getCurrentRole() {
+  return CURRENT_ROLE;
+}
+function setCurrentProfile(p) {
+  CURRENT_PROFILE = p;
+}
+function getCurrentProfile() {
+  return CURRENT_PROFILE;
+}
+try {
+  Object.defineProperty(window, 'CURRENT_ROLE', {
+    get: function() { return CURRENT_ROLE; },
+    set: function(r) { CURRENT_ROLE = r; },
+    configurable: true
+  });
+  Object.defineProperty(window, 'CURRENT_PROFILE', {
+    get: function() { return CURRENT_PROFILE; },
+    set: function(p) { CURRENT_PROFILE = p; },
+    configurable: true
+  });
+} catch(e) {}
+
+function roleRank(r) {
+  if (r === 'admin') return 4;
+  if (r === 'owner') return 3;
+  if (r === 'manager') return 2;
+  if (r === 'employee') return 1;
+  return 0;
+}
+function isAdmin() { return CURRENT_ROLE === 'admin'; }
+function isOwner() { return CURRENT_ROLE === 'owner'; }
+function isManager() { return CURRENT_ROLE === 'manager'; }
+function isStaff() { return CURRENT_ROLE === 'owner' || CURRENT_ROLE === 'manager'; }
+function isEmployee() { return CURRENT_ROLE === 'employee'; }
+
+function canCreateRole(targetRole) {
+  if (isAdmin()) return true;
+  if (isOwner()) return targetRole === 'manager' || targetRole === 'employee';
+  if (isManager()) return targetRole === 'employee';
+  return false;
+}
+function canManageUser(targetRole) {
+  if (isAdmin()) return true;
+  return roleRank(CURRENT_ROLE) > roleRank(targetRole);
+}
+function canDeactivateUser(targetUser, allUsers) {
+  if (!canManageUser(targetUser.role)) return false;
+  if (targetUser.role === 'owner') {
+    var activeOwners = (allUsers || []).filter(function(u) {
+      return u.role === 'owner' && u.active && u.id !== targetUser.id;
+    });
+    if (activeOwners.length < 1) return false;
+  }
+  return true;
+}
+
+/* ---------- Driver Scoped Customer Visibility ---------- */
+function visibleCustomers() {
+  if (CURRENT_ROLE !== 'employee') return S.customers;
+  var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || '';
+  var openTrips = (S.vehicleTrips || []).filter(function(t) {
+    return (!myEmpId || t.employee === myEmpId) && !t.handoverAt;
+  });
+  var allowed = {};
+  openTrips.forEach(function(t) {
+    if (Array.isArray(t.customers)) t.customers.forEach(function(id) { allowed[id] = true; });
+    (S.fg || []).forEach(function(r) {
+      if (r.trip === t.id && r.cust) allowed[r.cust] = true;
+    });
+  });
+  return S.customers.filter(function(c) { return allowed[c.id]; });
+}
+
+/* ---------- Driver Offline Delivery Outbox ---------- */
+var OUTBOX_KEY = 'larven_dispatch_outbox';
+function getOutbox() {
+  try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]'); }
+  catch(e) { return []; }
+}
+function saveOutbox(list) {
+  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(list)); }
+  catch(e) {}
+}
+function queueOfflineDelivery(tripId, data) {
+  var provId = 'PROV-' + (tripId || 'DEL') + '-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+  var item = { provisional_id: provId, trip_id: tripId, created_at: new Date().toISOString(), data: data };
+  var outbox = getOutbox();
+  outbox.push(item);
+  saveOutbox(outbox);
+  return provId;
+}
+
 function seed(){
  var d=today(), D=function(n){var x=new Date();x.setDate(x.getDate()-n);return ymd(x)};
  var c=['Ramesh Enterprises','Sri Lakshmi Hotel','Venkat Traders','Anand Sweets','Green Valley School','City Hospital','Balaji Tiffins','Sai Residency'];
@@ -53,6 +189,7 @@ function seed(){
 var S;
 try{S=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){S=null}
 if(!S||!S.bills)S=seed();
+initCafeStorage();
 if(S.settings&&/aquaflow/i.test(S.settings.name))S.settings.name='Larven Enterprises';
  if(!Array.isArray(S.cafeSales))S.cafeSales=[];if(!Array.isArray(S.cafePurchases))S.cafePurchases=[];if(!Array.isArray(S.cafeStockMoves))S.cafeStockMoves=[];if(!Array.isArray(S.cafeExpenses))S.cafeExpenses=[];if(!Array.isArray(S.cafeEmployees))S.cafeEmployees=[];
  if(!Array.isArray(S.cafeStockMoves))S.cafeStockMoves=[];
@@ -75,7 +212,18 @@ function heal(){var bid={},cid={},m={};S.bills.forEach(function(b){bid[b.id]=1})
  S.payments.forEach(function(p){if(p.bill&&p.bill!='-')m[p.bill]=(m[p.bill]||0)+p.amount});
  S.bills.forEach(function(b){var d=Math.round(((b.paid||0)-(m[b.id]||0))*100)/100;if(d>0)S.payments.push({id:nid('P',S.payments),date:b.date,cust:b.cust,amount:d,mode:b.mode||'Cash',bill:b.id})});
  S.payments=S.payments.filter(function(p){return p.bill=='-'?!!cid[p.cust]:!!bid[p.bill]});syncPaid()}
-function save(){try{syncPaid();localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Could not save: browser storage is full')}}
+function save(){
+  try{
+    syncPaid();
+    saveCafe();
+    var bmsData = Object.assign({}, S);
+    delete bmsData.cafeSales;
+    delete bmsData.cafePurchases;
+    delete bmsData.cafeStockMoves;
+    delete bmsData.cafeExpenses;
+    delete bmsData.cafeEmployees;
+    localStorage.setItem(KEY, JSON.stringify(bmsData));
+  }catch(e){toast('Could not save: browser storage is full')}}
 function nid(p,a){return p+(a.length?Math.max.apply(null,a.map(function(x){return parseInt(String(x.id).replace(/\D/g,''))||0}))+1:1)}
 function custName(id){var c=S.customers.filter(function(x){return x.id==id})[0];return c?c.name:'Walk-in'}
 function empName(id){var c=S.employees.filter(function(x){return x.id==id})[0];return c?c.name:'-'}
@@ -91,6 +239,7 @@ function stockLevels(){var m={};S.stock.forEach(function(r){m[r.item]=(m[r.item]
 function sum(a,f){return a.reduce(function(x,y){return x+f(y)},0)}
 heal();save();
 window.__AF={S:function(){return S},save:save};
+window.S=S;
 /* ---------- navigation ---------- */
 var NAV=[
  ['',[['dashboard','Dashboard','home']]],
@@ -100,15 +249,18 @@ var NAV=[
  ['Employees',[['employees','Employee Management','users'],['attendance','Attendance','cal'],['att-setup','Attendance Banners','cal'],['timings','In / Out Timings','clock'],['advances','Advances / Salary','wallet']]],
   ['',[['vehicles','Vehicle Management','box'],['contacts','Contacts Directory','users']]],
  ['Cafe',[['cafe-dashboard','Cafe Dashboard','home'],['cafe-employees','Cafe Employee Management','users'],['cafe-sales','Cafe Sales','doc'],['cafe-purchases','Cafe Purchases','box'],['cafe-expenses','Cafe Expenses','list'],['cafe-stock-in','Cafe Stock In','box'],['cafe-stock-out','Cafe Stock Out / Usage','box'],['cafe-current-stock','Cafe Current Stock','hist'],['cafe-reports','Cafe Reports','bars']]],
- ['Reports',[['backup','Backup & Restore','download']]],
+ ['Reports',[['backup','Backup & Restore','download'],['price-variance','Price Variance Report','bars']]],
  ['Settings',[['settings','Business Settings','gear']]]
 ];
-var TITLES={customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview'},NAVOPEN={},LASTCUR='';
+var TITLES={customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview','price-variance':'Price Variance Report'},NAVOPEN={},LASTCUR='';
 function groupOf(id){for(var i=0;i<NAV.length;i++)for(var j=0;j<NAV[i][1].length;j++)if(NAV[i][1][j][0]==id)return NAV[i][0]||''}
 function buildNav(cur){
  var g0=groupOf(cur);if(cur!=LASTCUR&&g0)NAVOPEN[g0]=true;LASTCUR=cur;
  var h='';NAV.forEach(function(g){
-  var links=g[1].map(function(i){TITLES[i[0]]=i[1];return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+i[1]+'</a>'}).join('');
+  var links=g[1].filter(function(i){
+    return !(i[0] == 'price-variance' && CURRENT_ROLE == 'employee');
+  }).map(function(i){TITLES[i[0]]=i[1];return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+i[1]+'</a>'}).join('');
+  if(g[0] == 'Cafe' && CURRENT_ROLE == 'employee') return;
   if(!g[0]){h+=links;return}
   var open=!!NAVOPEN[g[0]];
   h+='<button type="button" class="grp'+(g[0]==g0?' has':'')+'" data-grp="'+g[0]+'" aria-expanded="'+open+'">'+g[0]+ic('chev')+'</button><div class="sub"'+(open?'':' hidden')+'>'+links+'</div>'});
@@ -200,7 +352,7 @@ function del(coll,id){return '<button class="btn sm danger" data-del="'+coll+':'
 function head(t,extra){return '<div class="ph"><h2>'+t+'</h2>'+(extra||'')+'</div>'}
 function formCard(fields,btn,id){var lists=fields.filter(function(f){return f.list}).map(function(f){return '<datalist id="'+f.list+'">'+(f.options||[]).map(function(o){return '<option value="'+esc(o)+'"></option>'}).join('')+'</datalist>'}).join('');return '<form class="card form" id="'+id+'" autocomplete="off">'+fields.map(fld).join('')+'<div class="fld"><button class="btn" type="submit" style="width:100%;height:42px">'+btn+'</button></div>'+lists+'</form>'}
 function kp(a){return '<div class="kpis">'+a.map(function(k){return '<div class="kpi"><small>'+k[0]+'</small><b>'+k[1]+'</b></div>'}).join('')+'</div>'}
-var custOpts=function(){return S.customers.map(function(c){return [c.id,c.name]})};
+var custOpts=function(){return visibleCustomers().map(function(c){return [c.id,c.name]})};
 var empOpts=function(){return S.employees.map(function(c){return [c.id,c.name]})};
 var MODES=['Cash','PhonePe','GPay','Bank Transfer','Cheque'];
 
@@ -505,12 +657,27 @@ function calcNB(){try{eaRefresh()}catch(e){}var sub=totalNB(),g=gstAmt(sub),t=ro
  el.previousElementSibling.textContent=b<0?'Excess received':'Credit (Balance)';
  var gr=$('#gstrow');if(gr){gr.hidden=!NB.gst;gr.innerHTML=NB.gst?'<span>Items total <b>'+money(sub)+'</b></span><span>CGST 2.5% <b>'+money(round2(g/2))+'</b></span><span>SGST 2.5% <b>'+money(round2(g-round2(g/2)))+'</b></span>':''}var qa=$('#nb-qr-amount');if(qa&&document.activeElement!==qa){var qv=r>0?r:t;qa.value=qv>0?(+qv).toFixed(2):''}var bs=$('#nb-barsum');if(bs)bs.innerHTML='Total <b>'+money(t)+'</b> &nbsp;·&nbsp; Received <b>'+money(r)+'</b> &nbsp;·&nbsp; '+(b<0?'Excess':'Balance')+' <b class="'+(b>0?'r':'')+'">'+money(Math.abs(b))+'</b>';updateUPIQR()}
 function lookup(q){q=q.trim().toLowerCase();var d=digits(q);if(q.length<1)return [];
- return S.customers.filter(function(c){return c.name.toLowerCase().indexOf(q)>-1||(d&&/\d/.test(q)&&digits(c.phone).indexOf(d)>-1)}).slice(0,6)}
+ return visibleCustomers().filter(function(c){return c.name.toLowerCase().indexOf(q)>-1||(d&&/\d/.test(q)&&digits(c.phone).indexOf(d)>-1)}).slice(0,6)}
 function showSug(){var src=document.activeElement&&document.activeElement.id=='nb-mob'?$('#nb-mob'):$('#nb-name'),list=lookup(src.value),box=$('#sug');
  if(!list.length){box.hidden=true;return}
  box.innerHTML=list.map(function(c){return '<button type="button" data-nb="pick" data-id="'+c.id+'"><span>'+esc(c.name)+'</span><small>'+esc(c.phone)+'</small></button>'}).join('');box.hidden=false}
 function custNote0(){var m=digits($('#nb-mob').value),c=S.customers.filter(function(x){return digits(x.phone)==m})[0],n=$('#custnote'),pd=$('#prevdue');if(!n)return;
- if(c){n.className='note ex';n.textContent='Existing customer: '+c.name;var o=outstanding(c.id);pd.textContent=o>0?'Total pending of this customer: '+money(o)+(NB.edit?'':' (not included in this bill)'):''}
+ if(c){
+  n.className='note ex';
+  var o=outstanding(c.id);
+  var noteText='Existing customer: '+c.name;
+  if(c.credit_limit&&c.credit_limit>0){
+    noteText+=' · Credit limit: '+money(c.credit_limit);
+    if(o>c.credit_limit)noteText+=' ⚠️ Warning: Dues exceed credit limit!';
+  }
+  n.textContent=noteText;
+  var dueTxt=o>0?'Total pending of this customer: '+money(o)+(NB.edit?'':' (not included in this bill)'):'';
+  if(c.credit_limit&&c.credit_limit>0&&o>c.credit_limit){
+    pd.innerHTML=(dueTxt?dueTxt+'<br>':'')+'<span style="color:var(--red);font-weight:600">⚠️ Credit limit warning: Outstanding ('+money(o)+') exceeds limit ('+money(c.credit_limit)+'). (Warning only)</span>';
+  }else{
+    pd.textContent=dueTxt;
+  }
+ }
  else if(m.length==10){n.className='note new';n.textContent='New customer. They will be added to Customers when you save the bill.';pd.textContent=''}
  else{n.className='note';n.textContent='Name, mobile number and address are all required to save the bill. Search an existing customer by name or mobile.';pd.textContent=''}}
 function custNote(){custNote0();locPaint()}
@@ -525,7 +692,14 @@ function saveBill(){
  if(!name)return bad('#nb-name','Enter the customer name');
  if(mob.length!=10)return bad('#nb-mob','Enter a 10-digit mobile number');
  if(!addr)return bad('#nb-addr','Enter the customer address');
- var items=NB.lines.filter(function(l){return l.q>0}).map(function(l){var p=lc(l);return {p:p.n,q:l.q,r:l.r,cs:p.c}});
+ var items=NB.lines.filter(function(l){return l.q>0}).map(function(l){var p=lc(l);return {
+  p: p.n,
+  q: l.q,
+  r: Number(l.r) || 0,
+  cs: p.c,
+  rate_source: 'manual',
+  entered_by: (CURRENT_PROFILE && (CURRENT_PROFILE.full_name || CURRENT_PROFILE.id)) || 'staff'
+}});
  if(!items.length)return bad('#nblines .lp','Select a product and enter cases or quantity');
  if(NB.lines.some(function(l){return l.q>0&&!(l.r>0)}))return bad('#nblines .lr','Enter the price for every item');
  var sub=totalNB(),tax=gstAmt(sub),total=round2(sub+tax),rec=round2(+$('#nb-rec').value||0);
@@ -730,7 +904,7 @@ function custList(){CUQ='';
  '<div class="card abf" style="grid-template-columns:1fr"><div class="fld"><label for="cu-q">Search customer</label><input id="cu-q" type="search" placeholder="Name, mobile or address" autocomplete="off"></div></div><div id="cures">'+custRows('')+'</div>'}
 function matchCust(c,q){q=(q||'').trim().toLowerCase();if(!q)return true;var d=q.replace(/[\s+\-]/g,'');if(/^\d+$/.test(d)){var ph=digits(c.phone);return d.length>=10?ph==d.slice(-10):ph.indexOf(d)==0}return (String(c.name||'')+' '+String(c.area||'')).toLowerCase().indexOf(q)>-1}
 function custRows(q){q=q.trim().toLowerCase();
- var l=S.customers.filter(function(c){return matchCust(c,q)}).map(function(c){return [c,cstat(c)]}).sort(function(a,b){return b[1].pend-a[1].pend||a[0].name.localeCompare(b[0].name)});
+ var l=visibleCustomers().filter(function(c){return matchCust(c,q)}).map(function(c){return [c,cstat(c)]}).sort(function(a,b){return b[1].pend-a[1].pend||a[0].name.localeCompare(b[0].name)});
  return table(['Customer','Mobile','Last purchase','Cases','Total','Paid','Pending','Location',''],l.map(function(a){var c=a[0],s=a[1],last=s.bills.length?s.bills[s.bills.length-1]:null;
   return ['<div><b>'+esc(c.name)+'</b><br><small class="muted">'+esc(c.area||'No address')+'</small></div>','<div class="rowact" style="align-items:center;gap:6px"><span>'+esc(c.phone)+'</span><button type="button" class="btn sm alt" data-cu="copy-mobile" data-phone="'+esc(c.phone)+'">Copy</button></div>',
    last?'<div>'+last.items.map(function(i){return esc(itemTxt(i))}).join('<br>')+'<br><small class="muted">'+fdate(last.date)+(last.time?' · '+fmt12(last.time):'')+'</small></div>':'-',
@@ -739,23 +913,28 @@ function custRows(q){q=q.trim().toLowerCase();
    '<div class="rowact"><button class="btn sm alt" data-cu="open" data-id="'+c.id+'">Open</button>'+(s.pend>0?'<button class="btn sm" data-cu="pay" data-id="'+c.id+'">Receive</button>':'')+'</div>']}),'No customers found.')}
 function custCases(bs){return Math.round(bs.reduce(function(a,b){return a+b.items.reduce(function(x,i){return x+i.q/(i.cs||1)},0)},0)*100)/100}
 function custBySize(bs){var m={};bs.forEach(function(b){b.items.forEach(function(i){m[i.p]=(m[i.p]||0)+i.q/(i.cs||1)})});return Object.keys(m).map(function(k){return '<span class="pill p-blue">'+esc(k)+': '+nf(Math.round(m[k]*100)/100)+' cases</span>'}).join(' ')}
-function custDetail(c){var s=cstat(c),pays=S.payments.filter(function(p){return p.cust==c.id}).slice().reverse();
+function custDetail(c){
+ if(CURRENT_ROLE==='employee' && !visibleCustomers().some(function(vc){return vc.id==c.id})){
+  return '<div class="ph"><button class="btn alt" data-cu="back">← All customers</button></div><div class="note">Access restricted: Customer is not on your open trips.</div>';
+ }
+ var s=cstat(c),pays=S.payments.filter(function(p){return p.cust==c.id}).slice().reverse();
  return '<div class="ph"><button class="btn alt" data-cu="back">← All customers</button></div>'+
  '<div class="card custcard"><div style="flex:1;min-width:0"><small class="muted">Customer</small><h2 style="margin:2px 0;font-size:22px">'+esc(c.name)+'</h2><div>'+esc(c.phone)+'</div><div class="muted">'+esc(c.area||'No address')+'</div></div>'+
   '<div class="rowact" style="align-self:flex-start"><button class="btn sm alt" data-cu="edit" data-id="'+c.id+'">Edit</button><button class="btn sm" data-cu="bill" data-id="'+c.id+'">+ New Bill</button>'+(s.pend>0?'<button class="btn sm green" data-cu="pay" data-id="'+c.id+'">Receive payment</button><a class="btn sm wa" target="_blank" rel="noopener" href="'+remindURL(c,s.pend)+'">Remind on WhatsApp</a>':'')+'<button class="btn sm danger" data-cu="del" data-id="'+c.id+'">Delete</button></div></div>'+
- kp([['Total bills',s.n],['Total cases',nf(custCases(s.bills))],['Total purchase',money(s.total)],['Total paid',money(s.paid)],['Pending amount','<span style="color:'+(s.pend>0?'var(--red)':'var(--green)')+'">'+money(s.pend)+'</span>']])+'<div class="card" style="margin-bottom:12px"><b>Cases taken (all bills):</b> '+(custBySize(s.bills)||'<span class="muted">None yet</span>')+'<div style="margin-top:10px">'+(c.loc?'<span class="muted">Saved location ('+c.loc.lat+', '+c.loc.lng+(c.loc.acc?' ±'+c.loc.acc+' m':'')+')</span><br>'+locLinks(c.loc,c.name,c.phone):'<span class="muted">No location saved. Use “Save Location” in New Bill.</span>')+'</div></div>'+
+ kp([['Total bills',s.n],['Total cases',nf(custCases(s.bills))],['Total purchase',money(s.total)],['Total paid',money(s.paid)],['Pending amount','<span style="color:'+(s.pend>0?'var(--red)':'var(--green)')+'">'+money(s.pend)+'</span>'],['Credit limit',c.credit_limit?money(c.credit_limit):'Off']])+'<div class="card" style="margin-bottom:12px"><b>Cases taken (all bills):</b> '+(custBySize(s.bills)||'<span class="muted">None yet</span>')+'<div style="margin-top:10px">'+(c.loc?'<span class="muted">Saved location ('+c.loc.lat+', '+c.loc.lng+(c.loc.acc?' ±'+c.loc.acc+' m':'')+')</span><br>'+locLinks(c.loc,c.name,c.phone):'<span class="muted">No location saved. Use “Save Location” in New Bill.</span>')+'</div></div>'+
  '<h3 style="margin:16px 0 0">Bills (date wise)</h3>'+billTable(s.bills,true)+
  '<h3 style="margin:16px 0 0">Payments received</h3>'+table(['Date','Amount','Mode','Against bill'],pays.map(function(p){return [fdate(p.date),money(p.amount),esc(p.mode),p.bill=='-'?'Advance':'#'+esc(p.bill)]}),'No payments yet.')}
 function custForm(c){var f=function(k,l,v,t,m){return '<div class="fld"><label for="cf-'+k+'">'+l+'</label><input id="cf-'+k+'" name="'+k+'" type="'+(t||'text')+'" value="'+esc(v||'')+'"'+(m||'')+'></div>'};
  openModal('<h3>'+(c?'Edit customer':'Add customer')+'</h3><p>Name, mobile number and address are all required.</p><form id="cuform" data-id="'+(c?c.id:'')+'" novalidate style="display:grid;gap:12px">'+f('name','Customer Name *',c&&c.name)+f('mobile','Mobile Number *',c&&digits(c.phone),'tel',' inputmode="numeric" maxlength="10"')+f('addr','Address *',c&&c.area)+
+  f('credit_limit','Credit Limit (₹, optional, off by default)',c&&c.credit_limit,'number',' min="0" step="1"')+
   '<div class="dact"><button type="button" class="btn alt" data-nb="close">Cancel</button><button type="submit" class="btn">Save</button></div></form>')}
 document.addEventListener('submit',function(e){if(e.target.id!='cuform')return;e.preventDefault();var f=e.target,id=f.dataset.id;
- var name=f.name.value.trim(),mob=digits(f.mobile.value),addr=f.addr.value.trim();
+ var name=f.name.value.trim(),mob=digits(f.mobile.value),addr=f.addr.value.trim(),clim=f.credit_limit?(parseFloat(f.credit_limit.value)||0):0;
  ['#cf-name','#cf-mobile','#cf-addr'].forEach(clearErr);
  if(!name)return bad('#cf-name','Enter the customer name');if(mob.length!=10)return bad('#cf-mobile','Enter a 10-digit mobile number');if(!addr)return bad('#cf-addr','Enter the address');
  var dup=S.customers.filter(function(x){return x.id!=id&&digits(x.phone)==mob})[0];if(dup)return bad('#cf-mobile','Mobile already used by '+dup.name);
- if(id){var c=cget(id);c.name=name;c.phone=mob;c.area=addr;cbills(id).forEach(function(b){b.name=name;b.mobile=mob;b.addr=addr});toast('Customer updated')}
- else{var n={id:nid('C',S.customers),name:name,phone:mob,area:addr,date:today()};S.customers.push(n);toast('Customer added')}
+ if(id){var c=cget(id);c.name=name;c.phone=mob;c.area=addr;c.credit_limit=clim;cbills(id).forEach(function(b){b.name=name;b.mobile=mob;b.addr=addr});toast('Customer updated')}
+ else{var n={id:nid('C',S.customers),name:name,phone:mob,area:addr,credit_limit:clim,date:today()};S.customers.push(n);toast('Customer added')}
  save();closeModal();render()});
 document.addEventListener('input',function(e){if(e.target.id=='cu-q'){$('#cures').innerHTML=custRows(e.target.value)}
  if(e.target.id=='op-q'){$('#opres').innerHTML=opRows(e.target.value)}});
@@ -1667,7 +1846,13 @@ function render(){
  if((location.hash||'').indexOf('#bill=')==0){return renderPublic()}
  if((location.hash||'').indexOf('#doc=')==0){return renderDoc()}
  if((location.hash||'').indexOf('#me=')==0){return renderPortal()}
- document.body.classList.remove('public');var id=(location.hash||'#dashboard').slice(1);if(!PAGES[id])id='dashboard';if(id!='new-bill')EDITID=null;if(id!='customers')CV=null;
+ document.body.classList.remove('public');var id=(location.hash||'#dashboard').slice(1);
+ if(id.indexOf('cafe-') == 0 && CURRENT_ROLE == 'employee'){
+   toast('Access restricted: Cafe is not accessible to employee accounts.');
+   id = 'dashboard';
+   location.hash = '#dashboard';
+ }
+ if(!PAGES[id])id='dashboard';if(id!='new-bill')EDITID=null;if(id!='customers')CV=null;
  if(id=='backup')BACKUP_MODE='daily';buildNav(id);buildTabs(id);closeMenu();document.body.classList.remove('searching');var pt=$('#ptitle');if(pt)pt.textContent=TITLES[id]||'';view.innerHTML=PAGES[id]();view.scrollTop=0;
  if(id=='new-bill')billInit();
  var nb=S.stock&&Object.keys(stockLevels()).filter(function(k){return stockLevels()[k]<=S.settings.low*.6}).length;
@@ -2005,7 +2190,86 @@ document.addEventListener('input',function(e){if(e.target.id=='j-emg'||e.target.
 
 /* ---------- employee-facing attendance wording ---------- */
 
+/* ---------- Price Variance Report (Decision 2) ---------- */
+function priceVarianceReport() {
+  if (CURRENT_ROLE === 'employee') {
+    return head('Price Variance Report') + '<div class="note">Access restricted to Managers and Owners.</div>';
+  }
+  var rows = [];
+  var custMap = {};
+  (S.customers || []).forEach(function(c) { custMap[c.id] = c; });
+  
+  var sortedBills = (S.bills || []).slice().sort(function(a, b) {
+    return (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || '');
+  });
+  
+  var lastRates = {};
+  sortedBills.forEach(function(b) {
+    var c = custMap[b.cust] || { name: b.name || 'Unknown', phone: b.mobile || '' };
+    (b.items || []).forEach(function(it) {
+      var prod = it.p || it.name;
+      var rate = Number(it.r) || 0;
+      var key = b.cust + '::' + prod;
+      if (lastRates[key] !== undefined) {
+        var prevRate = lastRates[key];
+        if (rate !== prevRate) {
+          var diff = round2(rate - prevRate);
+          rows.push({
+            date: b.date,
+            bill: b.id,
+            customer: c.name,
+            product: prod,
+            prevRate: prevRate,
+            newRate: rate,
+            diff: diff,
+            entered_by: it.entered_by || 'staff'
+          });
+        }
+      }
+      lastRates[key] = rate;
+    });
+  });
+  
+  rows.reverse();
+  
+  return head('Price Variance Report', '<small class="muted">Informational only · Shows bill items where the rate differed from the customer’s previous rate for that product</small>') +
+    kp([['Total Variances', rows.length], ['Customers Affected', new Set(rows.map(function(r){return r.customer})).size]]) +
+    table(['Date', 'Bill #', 'Customer', 'Product', 'Prev Rate', 'Billed Rate', 'Diff', 'Entered By'],
+      rows.map(function(r) {
+        var diffStyle = r.diff > 0 ? 'color:var(--green)' : 'color:var(--red)';
+        var diffStr = (r.diff > 0 ? '+' : '') + inr(r.diff);
+        return [
+          fdate(r.date),
+          '<b>#' + esc(r.bill) + '</b>',
+          esc(r.customer),
+          esc(r.product),
+          inr(r.prevRate),
+          '<b>' + inr(r.newRate) + '</b>',
+          '<b style="' + diffStyle + '">' + diffStr + '</b>',
+          esc(r.entered_by)
+        ];
+      }),
+      'No price variances detected across customer billing history.'
+    );
+}
+PAGES['price-variance'] = priceVarianceReport;
+
 window.addEventListener('hashchange',render);
 render();
 window.NAV=NAV;window.PAGES=PAGES;
+window.SYSTEM_ROLES=SYSTEM_ROLES;
+window.DUTY_TAGS=DUTY_TAGS;
+window.roleRank=roleRank;
+window.canCreateRole=canCreateRole;
+window.canManageUser=canManageUser;
+window.canDeactivateUser=canDeactivateUser;
+window.visibleCustomers=visibleCustomers;
+window.queueOfflineDelivery=queueOfflineDelivery;
+window.KEY_CAFE=KEY_CAFE;
+window.setCurrentRole=setCurrentRole;
+window.getCurrentRole=getCurrentRole;
+window.setCurrentProfile=setCurrentProfile;
+window.getCurrentProfile=getCurrentProfile;
+window.priceVarianceReport=priceVarianceReport;
+window.S=S;
 })();

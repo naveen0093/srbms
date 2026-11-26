@@ -1,8 +1,13 @@
 // tests/test_smoke.mjs
-// Smoke test suite verifying:
+// Comprehensive test suite verifying:
 // 1. app.js parses cleanly and executes
-// 2. Every page route in NAV exists in PAGES as an executable function
-// 3. Page renderers execute without throwing errors
+// 2. Authoritative Decisions verification:
+//    - Decision 1: Roles, Hierarchy, Last-Owner guard, Duty tags
+//    - Decision 2: Manual rates, rate_source, entered_by, and price_list table in SQL
+//    - Decision 3: Offline driver outbox & provisional receipt generation
+//    - Decision 4: Frozen Cafe module storage isolation (larven-cafe-v1), employee hiding, no DB tables
+//    - Decision 5: Employee scoped customer visibility on open trips
+// 3. Every page route in NAV exists in PAGES as an executable function
 // 4. Vendor files and README.md exist with proper versions
 // 5. Assets (images) exist as standalone files
 // 6. index.html is free of browser-saved artifacts and base64 strings
@@ -12,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-console.log('--- Smoke Test: Larven BMS Architecture & Route Integrity ---');
+console.log('--- Smoke Test: Larven BMS Architecture & Authoritative Decisions ---');
 
 // 1. Verify app.js syntax and parseability
 console.log('1. Checking app.js syntax and parseability...');
@@ -49,6 +54,7 @@ const mockDoc = {
   addEventListener: () => {}
 };
 
+const storageMap = {};
 const mockWindow = {
   location: {
     href: 'http://127.0.0.1:8788/#dashboard',
@@ -57,15 +63,15 @@ const mockWindow = {
     pathname: '/'
   },
   localStorage: {
-    getItem: () => null,
-    setItem: () => {},
-    removeItem: () => {}
+    getItem: (k) => storageMap[k] || null,
+    setItem: (k, v) => { storageMap[k] = String(v); },
+    removeItem: (k) => { delete storageMap[k]; }
   },
   btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
   atob: (s) => Buffer.from(s, 'base64').toString('binary'),
   addEventListener: () => {},
   document: mockDoc,
-  navigator: { userAgent: 'smoke-test-agent' },
+  navigator: { userAgent: 'smoke-test-agent', onLine: true },
   fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
   setTimeout: () => 1,
   clearTimeout: () => {},
@@ -81,8 +87,148 @@ const context = vm.createContext(mockWindow);
 vm.runInContext(appCode, context);
 console.log('  ✓ app.js runtime initialization succeeded');
 
-// 3. Verify NAV and PAGES route completeness
-console.log('3. Validating NAV routes against PAGES registry...');
+// 3. Verify Authoritative Decisions
+console.log('3. Validating Authoritative Decisions...');
+
+// --- Decision 1: Roles & Hierarchy ---
+console.log('  Checking Decision 1: Roles, Hierarchy & Last Owner Protection...');
+const { roleRank, canCreateRole, canManageUser, canDeactivateUser, SYSTEM_ROLES, DUTY_TAGS } = context.window;
+
+assert.deepEqual(Array.from(SYSTEM_ROLES), ['admin', 'owner', 'manager', 'employee'], 'Roles must match exactly');
+assert.deepEqual(Array.from(DUTY_TAGS), ['delivery', 'production', 'godown'], 'Duty tags must match exactly');
+
+assert.ok(roleRank('admin') > roleRank('owner'), 'admin rank > owner rank');
+assert.ok(roleRank('owner') > roleRank('manager'), 'owner rank > manager rank');
+assert.ok(roleRank('manager') > roleRank('employee'), 'manager rank > employee rank');
+
+// Owner permissions
+context.window.CURRENT_ROLE = 'owner';
+assert.equal(canCreateRole('manager'), true, 'owner creates manager');
+assert.equal(canCreateRole('employee'), true, 'owner creates employee');
+assert.equal(canCreateRole('owner'), false, 'owner cannot create owner');
+assert.equal(canCreateRole('admin'), false, 'owner cannot create admin');
+assert.equal(canManageUser('manager'), true, 'owner manages manager');
+assert.equal(canManageUser('employee'), true, 'owner manages employee');
+assert.equal(canManageUser('owner'), false, 'owner cannot manage equal rank owner');
+assert.equal(canManageUser('admin'), false, 'owner cannot manage higher rank admin');
+
+// Manager permissions
+context.window.CURRENT_ROLE = 'manager';
+assert.equal(canCreateRole('employee'), true, 'manager creates employee');
+assert.equal(canCreateRole('manager'), false, 'manager cannot create manager');
+assert.equal(canCreateRole('owner'), false, 'manager cannot create owner');
+assert.equal(canManageUser('employee'), true, 'manager manages employee');
+assert.equal(canManageUser('manager'), false, 'manager cannot manage equal rank manager');
+assert.equal(canManageUser('owner'), false, 'manager cannot manage owner');
+
+// Admin permissions
+context.window.CURRENT_ROLE = 'admin';
+assert.equal(canCreateRole('owner'), true, 'admin creates owner');
+assert.equal(canCreateRole('manager'), true, 'admin creates manager');
+assert.equal(canCreateRole('employee'), true, 'admin creates employee');
+assert.equal(canManageUser('owner'), true, 'admin can manage operational accounts');
+
+// Last active owner deletion guard
+context.window.CURRENT_ROLE = 'admin';
+const testOwnersOnlyOne = [{ id: 'o1', role: 'owner', active: true }];
+const testOwnersMultiple = [{ id: 'o1', role: 'owner', active: true }, { id: 'o2', role: 'owner', active: true }];
+assert.equal(canDeactivateUser({ id: 'o1', role: 'owner' }, testOwnersOnlyOne), false, 'Last active owner cannot be deactivated');
+assert.equal(canDeactivateUser({ id: 'o1', role: 'owner' }, testOwnersMultiple), true, 'Owner can be deactivated if another active owner exists');
+console.log('    ✓ Decision 1 verified (roles, hierarchy, duty tags, last-owner guard)');
+
+// --- Decision 2: Prices, Rate Source, Price List Table & Variance Report ---
+console.log('  Checking Decision 2: Manual rates, rate_source, price_list SQL table, variance report & credit limit...');
+assert.ok(appCode.includes("rate_source: 'manual'"), "Bill items must record rate_source: 'manual'");
+assert.ok(appCode.includes("entered_by:"), "Bill items must record entered_by");
+
+// Verify price_list table exists in SQL migration
+const sqlInit = fs.readFileSync('supabase/migrations/001_init.sql', 'utf8');
+assert.ok(sqlInit.includes('create table if not exists price_list'), 'price_list table must exist in 001_init.sql');
+assert.ok(sqlInit.includes('rate numeric not null check (rate >= 0)'), 'price_list table has rate numeric');
+assert.ok(sqlInit.includes('effective_from date not null default current_date'), 'price_list table has effective_from date');
+
+// Test Price Variance Report
+const { priceVarianceReport } = context.window;
+assert.ok(typeof priceVarianceReport === 'function', 'priceVarianceReport function must exist');
+
+context.window.S.bills = [
+  { id: 'B1', cust: 'C1', date: '2026-11-20', items: [{ p: '500ml', r: 100, entered_by: 'Staff A' }] },
+  { id: 'B2', cust: 'C1', date: '2026-11-21', items: [{ p: '500ml', r: 110, entered_by: 'Staff B' }] }
+];
+const varianceHtml = priceVarianceReport();
+assert.ok(varianceHtml.includes('Price Variance Report'), 'Report renders title');
+assert.ok(varianceHtml.includes('Staff B'), 'Report identifies entered_by');
+
+// Employee role gets restricted notice
+context.window.setCurrentRole('employee');
+const empVarianceHtml = priceVarianceReport();
+assert.ok(empVarianceHtml.includes('Access restricted'), 'Employees restricted from price variance report');
+context.window.setCurrentRole('owner');
+
+// Verify Credit Limit warning logic in app code
+assert.ok(appCode.includes("Credit limit warning"), 'Credit limit warning must exist in app code');
+console.log('    ✓ Decision 2 verified (manual pricing metadata, SQL price_list table, variance report & credit limit warning)');
+
+// --- Decision 3: Offline Outbox & Provisional Receipts ---
+console.log('  Checking Decision 3: Offline driver outbox and provisional receipt numbers...');
+const { queueOfflineDelivery } = context.window;
+assert.ok(typeof queueOfflineDelivery === 'function', 'queueOfflineDelivery function must exist');
+
+const sampleTripId = 'TR101';
+const sampleDelivery = { customer: 'C1', cases: 10, total: 1200 };
+const provId = queueOfflineDelivery(sampleTripId, sampleDelivery);
+
+assert.ok(provId.startsWith('PROV-TR101-'), `Provisional ID (${provId}) must start with PROV-TR101-`);
+const storedOutbox = JSON.parse(storageMap['larven_dispatch_outbox'] || '[]');
+assert.ok(storedOutbox.length > 0, 'Outbox must contain queued delivery');
+assert.equal(storedOutbox[storedOutbox.length - 1].provisional_id, provId, 'Outbox entry matches provisional receipt ID');
+console.log(`    ✓ Decision 3 verified (provisional receipt ${provId} stored in outbox)`);
+
+// --- Decision 4: Cafe Module Frozen & Isolated ---
+console.log('  Checking Decision 4: Cafe module isolated in separate localStorage key and hidden from employees...');
+assert.equal(context.window.KEY_CAFE, 'larven-cafe-v1', "Cafe data must save to 'larven-cafe-v1'");
+assert.ok(!sqlInit.includes('create table if not exists cafe_sales'), '001_init.sql must NOT contain cafe_sales table');
+assert.ok(!sqlInit.includes('create table if not exists cafe_purchases'), '001_init.sql must NOT contain cafe_purchases table');
+assert.ok(!sqlInit.includes('create table if not exists cafe_expenses'), '001_init.sql must NOT contain cafe_expenses table');
+assert.ok(!sqlInit.includes('create table if not exists cafe_stock_moves'), '001_init.sql must NOT contain cafe_stock_moves table');
+assert.ok(!sqlInit.includes('create table if not exists cafe_employees'), '001_init.sql must NOT contain cafe_employees table');
+
+// Verify Cafe is hidden from employee
+context.window.CURRENT_ROLE = 'employee';
+assert.ok(appCode.includes("g[0] == 'Cafe' && CURRENT_ROLE == 'employee'"), 'Cafe menu must be hidden from employee role in buildNav');
+assert.ok(appCode.includes("id.indexOf('cafe-') == 0 && CURRENT_ROLE == 'employee'"), 'Cafe routes must be guarded from employee role in render');
+console.log('    ✓ Decision 4 verified (isolated in larven-cafe-v1, zero DB tables, employee route guard)');
+
+// --- Decision 5: Customer Visibility Scoped to Open Trips ---
+console.log('  Checking Decision 5: Employee scoped customer visibility...');
+const { visibleCustomers } = context.window;
+assert.ok(typeof visibleCustomers === 'function', 'visibleCustomers helper must exist');
+
+// Owner sees all
+context.window.CURRENT_ROLE = 'owner';
+const ownerCusts = visibleCustomers();
+assert.ok(ownerCusts.length >= 8, 'Owner sees all customers');
+
+// Employee sees only open trip customers
+context.window.CURRENT_ROLE = 'employee';
+context.window.CURRENT_PROFILE = { id: 'u-driver', full_name: 'Driver 1', role: 'employee', employee_id: 'M1' };
+context.window.S.vehicleTrips = [
+  { id: 'TR-OPEN', employee: 'M1', handoverAt: null, customers: ['C1', 'C2'] },
+  { id: 'TR-CLOSED', employee: 'M1', handoverAt: '2026-11-26T12:00:00Z', customers: ['C3'] }
+];
+
+const empCusts = visibleCustomers();
+const empCustIds = empCusts.map(c => c.id);
+assert.ok(empCustIds.includes('C1'), 'Employee sees customer on open trip C1');
+assert.ok(empCustIds.includes('C2'), 'Employee sees customer on open trip C2');
+assert.ok(!empCustIds.includes('C3'), 'Employee cannot see customer from closed trip C3');
+console.log('    ✓ Decision 5 verified (employee visibility scoped strictly to open trips)');
+
+// Reset role to owner for route testing
+context.window.CURRENT_ROLE = 'owner';
+
+// 4. Verify NAV and PAGES route completeness
+console.log('4. Validating NAV routes against PAGES registry...');
 const nav = context.window.NAV;
 const pages = context.window.PAGES;
 
@@ -128,8 +274,8 @@ assert.strictEqual(
 );
 console.log(`  ✓ All ${allNavRoutes.length} NAV routes exist in PAGES and render valid HTML without errors`);
 
-// 4. Verify Vendor Files and README
-console.log('4. Verifying vendor libraries and licenses...');
+// 5. Verify Vendor Files and README
+console.log('5. Verifying vendor libraries and licenses...');
 const vendorFiles = [
   { name: 'html2canvas.min.js', minSize: 100000 },
   { name: 'jspdf.umd.min.js', minSize: 300000 },
@@ -153,8 +299,8 @@ assert.ok(vendorReadme.includes('0.20.3'), 'README documents upgraded SheetJS 0.
 assert.ok(vendorReadme.includes('QRCode.js'), 'README documents QRCode.js');
 console.log('  ✓ public/vendor/README.md documents all 4 libraries with versions and licenses');
 
-// 5. Verify Assets
-console.log('5. Verifying standalone assets...');
+// 6. Verify Assets
+console.log('6. Verifying standalone assets...');
 const heroPath = 'public/assets/hero.jpg';
 const wmPath = 'public/assets/watermark.png';
 
@@ -170,8 +316,8 @@ assert.ok(heroBuf[0] === 0xff && heroBuf[1] === 0xd8 && heroBuf[2] === 0xff, 'he
 assert.ok(wmBuf[0] === 0x89 && wmBuf[1] === 0x50 && wmBuf[2] === 0x4e && wmBuf[3] === 0x47, 'watermark.png must be a valid PNG');
 console.log(`  ✓ Assets verified: hero.jpg (${heroBuf.length} bytes), watermark.png (${wmBuf.length} bytes)`);
 
-// 6. Verify index.html clean state
-console.log('6. Verifying public/index.html clean state...');
+// 7. Verify index.html clean state
+console.log('7. Verifying public/index.html clean state...');
 const indexHtml = fs.readFileSync('public/index.html', 'utf8');
 
 assert.ok(!indexHtml.includes('saved from url'), 'index.html must not contain saved-from comment');
@@ -192,4 +338,4 @@ assert.ok(indexHtml.includes('<script src="/vendor/xlsx.full.min.js"></script>')
 assert.ok(indexHtml.includes('<script src="/vendor/qrcode.min.js"></script>'), 'index.html loads vendored qrcode');
 console.log('  ✓ public/index.html is clean, standalone, and references local assets');
 
-console.log('\n--- ALL SMOKE TESTS PASSED SUCCESSFULLY! ---');
+console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

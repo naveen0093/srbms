@@ -2,21 +2,110 @@
 -- DESIGN: every app collection S.<name> is one table: id (text, same ids as the app: C1, B1001, P5 ...)
 -- + data (jsonb = the exact object the app stores). So a new field in the app NEVER needs a SQL change
 -- and field names can never mismatch. Dates/amounts stay inside data exactly as the app writes them.
+-- NOTE: Cafe module is FROZEN and isolated client-side (no cafe tables in DB).
 
 create table if not exists profiles(
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null,
-  role text not null default 'employee' check (role in ('owner','accountant','employee')),
+  role text not null default 'employee' check (role in ('admin','owner','manager','employee')),
   employee_id text,
   active boolean not null default true,
   created_at timestamptz not null default now());
 
 create or replace function my_role() returns text language sql stable security definer set search_path=public as
 $$ select role from profiles where id=auth.uid() and active $$;
-create or replace function is_staff() returns boolean language sql stable security definer set search_path=public as
-$$ select coalesce(my_role() in ('owner','accountant'),false) $$;
 
--- whole-app snapshot (same JSON as localStorage 'aquaflow-bms-v1' minus the collections below) : settings, billDeletePin, etc.
+create or replace function role_rank(r text) returns int language sql immutable as $$
+  select case r
+    when 'admin' then 4
+    when 'owner' then 3
+    when 'manager' then 2
+    when 'employee' then 1
+    else 0
+  end;
+$$;
+
+create or replace function is_staff() returns boolean language sql stable security definer set search_path=public as
+$$ select coalesce(my_role() in ('owner','manager'), false) $$;
+
+-- Hierarchy and account management guard
+create or replace function check_profile_management() returns trigger language plpgsql security definer as $$
+declare
+  v_caller_role text;
+  v_caller_rank int;
+  v_target_rank int;
+  v_active_owners int;
+begin
+  v_caller_role := my_role();
+  if auth.uid() is null or auth.role() = 'service_role' then
+    return coalesce(new, old);
+  end if;
+
+  v_caller_rank := role_rank(v_caller_role);
+
+  -- 1. Guard against deleting or deactivating the last active owner
+  if (tg_op = 'DELETE' and old.role = 'owner') or 
+     (tg_op = 'UPDATE' and old.role = 'owner' and (new.active = false or new.role <> 'owner')) then
+    select count(*) into v_active_owners from profiles where role = 'owner' and active = true and id <> old.id;
+    if v_active_owners < 1 then
+      raise exception 'Cannot remove or deactivate the last active owner.';
+    end if;
+  end if;
+
+  -- 2. Insertion hierarchy rules
+  if tg_op = 'INSERT' then
+    if v_caller_role = 'admin' then
+      return new;
+    elsif v_caller_role = 'owner' then
+      if new.role not in ('manager', 'employee') then
+        raise exception 'Owners can only create managers and employees.';
+      end if;
+      return new;
+    elsif v_caller_role = 'manager' then
+      if new.role <> 'employee' then
+        raise exception 'Managers can only create employees.';
+      end if;
+      return new;
+    else
+      raise exception 'Employees cannot create user accounts.';
+    end if;
+  end if;
+
+  -- 3. Update / Delete rules: nobody manages an account of equal or higher rank
+  v_target_rank := role_rank(old.role);
+  if v_caller_role <> 'admin' and v_caller_rank <= v_target_rank then
+    raise exception 'Cannot modify or delete an account of equal or higher rank.';
+  end if;
+
+  if tg_op = 'UPDATE' and new.role <> old.role then
+    if v_caller_role = 'owner' and new.role not in ('manager', 'employee') then
+      raise exception 'Owners can only assign manager or employee roles.';
+    elsif v_caller_role = 'manager' and new.role <> 'employee' then
+      raise exception 'Managers can only assign employee roles.';
+    end if;
+  end if;
+
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists trg_profile_mgmt on profiles;
+create trigger trg_profile_mgmt
+  before insert or update or delete on profiles
+  for each row execute function check_profile_management();
+
+-- Price List table (for future use, unused by app)
+create table if not exists price_list(
+  id uuid primary key default gen_random_uuid(),
+  product text not null,
+  customer_id text,
+  rate numeric not null check (rate >= 0),
+  effective_from date not null default current_date,
+  created_at timestamptz not null default now(),
+  created_by uuid default auth.uid() references profiles(id) on delete set null
+);
+
+-- whole-app snapshot (same JSON as localStorage minus collections below)
 create table if not exists app_state(
   id text primary key default 'main',
   data jsonb not null default '{}',
@@ -142,51 +231,6 @@ create table if not exists vehicle_trips(
 drop trigger if exists t_touch on vehicle_trips; create trigger t_touch before update on vehicle_trips for each row execute function touch();
 create index if not exists vehicle_trips_data_gin on vehicle_trips using gin (data jsonb_path_ops);
 
-create table if not exists cafe_sales(
-  id text primary key,
-  data jsonb not null,
-  created_at timestamptz not null default now(),
-  created_by uuid default auth.uid() references profiles(id) on delete set null,
-  updated_at timestamptz not null default now());
-drop trigger if exists t_touch on cafe_sales; create trigger t_touch before update on cafe_sales for each row execute function touch();
-create index if not exists cafe_sales_data_gin on cafe_sales using gin (data jsonb_path_ops);
-
-create table if not exists cafe_purchases(
-  id text primary key,
-  data jsonb not null,
-  created_at timestamptz not null default now(),
-  created_by uuid default auth.uid() references profiles(id) on delete set null,
-  updated_at timestamptz not null default now());
-drop trigger if exists t_touch on cafe_purchases; create trigger t_touch before update on cafe_purchases for each row execute function touch();
-create index if not exists cafe_purchases_data_gin on cafe_purchases using gin (data jsonb_path_ops);
-
-create table if not exists cafe_stock_moves(
-  id text primary key,
-  data jsonb not null,
-  created_at timestamptz not null default now(),
-  created_by uuid default auth.uid() references profiles(id) on delete set null,
-  updated_at timestamptz not null default now());
-drop trigger if exists t_touch on cafe_stock_moves; create trigger t_touch before update on cafe_stock_moves for each row execute function touch();
-create index if not exists cafe_stock_moves_data_gin on cafe_stock_moves using gin (data jsonb_path_ops);
-
-create table if not exists cafe_expenses(
-  id text primary key,
-  data jsonb not null,
-  created_at timestamptz not null default now(),
-  created_by uuid default auth.uid() references profiles(id) on delete set null,
-  updated_at timestamptz not null default now());
-drop trigger if exists t_touch on cafe_expenses; create trigger t_touch before update on cafe_expenses for each row execute function touch();
-create index if not exists cafe_expenses_data_gin on cafe_expenses using gin (data jsonb_path_ops);
-
-create table if not exists cafe_employees(
-  id text primary key,
-  data jsonb not null,
-  created_at timestamptz not null default now(),
-  created_by uuid default auth.uid() references profiles(id) on delete set null,
-  updated_at timestamptz not null default now());
-drop trigger if exists t_touch on cafe_employees; create trigger t_touch before update on cafe_employees for each row execute function touch();
-create index if not exists cafe_employees_data_gin on cafe_employees using gin (data jsonb_path_ops);
-
 create table if not exists payslips(
   id text primary key,
   data jsonb not null,
@@ -255,11 +299,6 @@ alter table visits enable row level security;
 alter table contacts enable row level security;
 alter table vehicles enable row level security;
 alter table vehicle_trips enable row level security;
-alter table cafe_sales enable row level security;
-alter table cafe_purchases enable row level security;
-alter table cafe_stock_moves enable row level security;
-alter table cafe_expenses enable row level security;
-alter table cafe_employees enable row level security;
 alter table payslips enable row level security;
 alter table applications enable row level security;
 alter table invites enable row level security;
@@ -267,14 +306,22 @@ alter table deleted_bills enable row level security;
 alter table cancelled_bills enable row level security;
 alter table att_sites enable row level security;
 alter table app_state enable row level security;
+alter table price_list enable row level security;
 alter table profiles enable row level security;
 
-do $$ declare t text; begin foreach t in array array['customers','bills','payments','stock','expenses','employees','attendance','advances','fg','visits','contacts','vehicles','vehicle_trips','cafe_sales','cafe_purchases','cafe_stock_moves','cafe_expenses','cafe_employees','payslips','applications','invites','deleted_bills','cancelled_bills','att_sites','app_state'] loop
+-- Staff (Owner & Manager) operational permissions
+do $$ declare t text; begin foreach t in array array['customers','bills','payments','stock','expenses','employees','attendance','advances','fg','visits','contacts','vehicles','vehicle_trips','payslips','applications','invites','deleted_bills','cancelled_bills','att_sites','app_state','price_list'] loop
  execute format('drop policy if exists staff_all on %I',t);
  execute format('create policy staff_all on %I for all using (is_staff()) with check (is_staff())',t);
 end loop; end $$;
 
--- Employee login: may read/add on the working tables only (no delete, no settings, no salary data of others)
+-- Admin: read-only support access to business operational data (no identity/payroll, no money/stock edits, fully audited)
+do $$ declare t text; begin foreach t in array array['customers','bills','payments','stock','expenses','attendance','fg','visits','contacts','vehicles','vehicle_trips','deleted_bills','cancelled_bills','att_sites','app_state','price_list'] loop
+ execute format('drop policy if exists admin_ro on %I',t);
+ execute format('create policy admin_ro on %I for select using (my_role() = ''admin'')',t);
+end loop; end $$;
+
+-- Employee login permissions (working tables only, no delete, no payroll data of others)
 drop policy if exists emp_sel on customers; create policy emp_sel on customers for select using (my_role()='employee');
 drop policy if exists emp_ins on customers; create policy emp_ins on customers for insert with check (my_role()='employee');
 drop policy if exists emp_sel on bills; create policy emp_sel on bills for select using (my_role()='employee');
@@ -290,9 +337,12 @@ drop policy if exists emp_ins on visits; create policy emp_ins on visits for ins
 drop policy if exists emp_sel on stock; create policy emp_sel on stock for select using (my_role()='employee');
 drop policy if exists emp_ins on stock; create policy emp_ins on stock for insert with check (my_role()='employee');
 drop policy if exists emp_upd on vehicle_trips; create policy emp_upd on vehicle_trips for update using (my_role()='employee') with check (my_role()='employee');
-drop policy if exists emp_sel on employees; create policy emp_sel on employees for select using (my_role()='employee' and (id=(select employee_id from profiles where id=auth.uid()) or data->>'emp'=(select employee_id from profiles where id=auth.uid()) or 'employees'='vehicles'));
-drop policy if exists emp_sel on vehicles; create policy emp_sel on vehicles for select using (my_role()='employee' and (id=(select employee_id from profiles where id=auth.uid()) or data->>'emp'=(select employee_id from profiles where id=auth.uid()) or 'vehicles'='vehicles'));
-drop policy if exists emp_sel on attendance; create policy emp_sel on attendance for select using (my_role()='employee' and (id=(select employee_id from profiles where id=auth.uid()) or data->>'emp'=(select employee_id from profiles where id=auth.uid()) or 'attendance'='vehicles'));
+drop policy if exists emp_sel on employees; create policy emp_sel on employees for select using (my_role()='employee' and (id=(select employee_id from profiles where id=auth.uid()) or data->>'emp'=(select employee_id from profiles where id=auth.uid())));
+drop policy if exists emp_sel on vehicles; create policy emp_sel on vehicles for select using (my_role()='employee');
+drop policy if exists emp_sel on attendance; create policy emp_sel on attendance for select using (my_role()='employee' and (id=(select employee_id from profiles where id=auth.uid()) or data->>'emp'=(select employee_id from profiles where id=auth.uid())));
 
+-- Profiles RLS
 drop policy if exists prof_self on profiles; create policy prof_self on profiles for select using (id=auth.uid());
+drop policy if exists prof_admin on profiles; create policy prof_admin on profiles for all using (my_role()='admin') with check (my_role()='admin');
 drop policy if exists prof_owner on profiles; create policy prof_owner on profiles for all using (my_role()='owner') with check (my_role()='owner');
+drop policy if exists prof_manager on profiles; create policy prof_manager on profiles for all using (my_role()='manager') with check (my_role()='manager');
