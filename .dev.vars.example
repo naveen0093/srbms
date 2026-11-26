@@ -1,7 +1,1 @@
-# Cloudflare Pages local development variables (for Wrangler)
-# Copy this file to .dev.vars and supply your project-specific credentials.
-# NEVER commit .dev.vars to source control.
-
-SUPABASE_URL=https://<your-project-ref>.supabase.co
-SUPABASE_ANON_KEY=your-supabase-anon-key-here
-SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key-here
+ADMIN_KEY=change-me-locally
