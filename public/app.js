@@ -4,6 +4,7 @@
 var $=function(s,r){return (r||document).querySelector(s)};
 var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
 var inr=function(n){return '₹'+Math.round(n).toLocaleString('en-IN')};
+var num=function(n){return Number(n||0).toLocaleString('en-IN')};
 var ymd=function(d){var p=function(n){return (n<10?'0':'')+n};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())};
 var today=function(){return ymd(new Date())};
 function defProducts(){return [{n:'300 ml',c:30,r:120},{n:'500 ml',c:24,r:120},{n:'500 ml',c:20,r:100},{n:'1 L',c:12,r:108},{n:'2 L',c:9,r:135},{n:'20 L Can',c:1,r:0}]}
@@ -205,6 +206,53 @@ if(S.settings&&!(S.settings.products||[]).some(function(p){return p.n=='20 L Can
 if(S.settings&&S.settings.ssv!==1){var LN=S.settings.locNames||(S.settings.locNames={});if(!LN.G1||LN.G1=='Godown 1')LN.G1='Godown 1 (SS Point 1)';if(!LN.G2||LN.G2=='Godown 2')LN.G2='Godown 2 (SS Point 2)';S.settings.ssv=1}if(S.settings&&!S.settings.locNames)S.settings.locNames={P:'Plant',G1:'Godown 1 (SS Point 1)',G2:'Godown 2 (SS Point 2)'};
 if(S.settings&&S.settings.fgUnit!='cases'){S.fg.forEach(function(r){var pc=fgPer(r.size);r.qty=Math.round((+r.qty||0)/pc*100)/100});S.settings.fgUnit='cases'}
  if(!Array.isArray(S.vehicles))S.vehicles=[];if(!Array.isArray(S.vehicleTrips))S.vehicleTrips=[];if(!S.settings.vehicleVideoMaxMB)S.settings.vehicleVideoMaxMB=25;
+ if(!Array.isArray(S.trips))S.trips=[];if(!Array.isArray(S.tripStops))S.tripStops=[];if(!Array.isArray(S.orders))S.orders=[];if(!Array.isArray(S.deliveries))S.deliveries=[];if(!Array.isArray(S.cashHandovers))S.cashHandovers=[];
+ (function initOperationsSeed(){
+   if(!S.vehicles.length){
+     S.vehicles=[
+       {id:'V1',number:'AP 39 AB 1234',type:'Tata Ace',driver:'M1',capacity_cases:100},
+       {id:'V2',number:'AP 39 CD 5678',type:'Bolero Maxi',driver:'M4',capacity_cases:120}
+     ];
+   }
+   if(Array.isArray(S.customers)){
+     var coords=[
+       {id:'C1',lat:13.558312,lng:78.502145,acc:8.4,lim:5000},
+       {id:'C2',lat:13.561200,lng:78.504300,acc:12.0,lim:3000},
+       {id:'C3',lat:null,lng:null,acc:null,lim:2000},
+       {id:'C4',lat:13.565100,lng:78.508200,acc:15.0,lim:2500},
+       {id:'C5',lat:null,lng:null,acc:null,lim:null}
+     ];
+     coords.forEach(function(item){
+       var c=S.customers.find(function(x){return x.id===item.id});
+       if(c){
+         if(c.lat===undefined)c.lat=item.lat;
+         if(c.lng===undefined)c.lng=item.lng;
+         if(c.accuracy_m===undefined)c.accuracy_m=item.acc;
+         if(c.credit_limit===undefined)c.credit_limit=item.lim;
+       }
+     });
+   }
+   if(!S.orders.length){
+     S.orders=[
+       {id:'ORD-1',order_no:'ORD-26-001',customer_id:'C1',order_date:today(),requested_date:today(),status:'planned',source:'sales_visit',notes:'Morning restock delivery',items:[{product_name:'20 L Can',cases:10,bottles:10,unit_rate:40,total_amount:400}],total_amount:400,created_by:'Muni Prasad'},
+       {id:'ORD-2',order_no:'ORD-26-002',customer_id:'C2',order_date:today(),requested_date:today(),status:'planned',source:'phone',notes:'Hotel dining supply',items:[{product_name:'1 L',cases:5,bottles:60,unit_rate:108,total_amount:540},{product_name:'20 L Can',cases:5,bottles:5,unit_rate:40,total_amount:200}],total_amount:740,created_by:'Muni Prasad'},
+       {id:'ORD-3',order_no:'ORD-26-003',customer_id:'C3',order_date:today(),requested_date:today(),status:'new',source:'sales_visit',notes:'Market general store order',items:[{product_name:'500 ml',cases:8,bottles:192,unit_rate:120,total_amount:960}],total_amount:960,created_by:'Suresh (Driver)'},
+       {id:'ORD-4',order_no:'ORD-26-004',customer_id:'C4',order_date:today(),requested_date:today(),status:'new',source:'stop',notes:'Daily sweet shop delivery',items:[{product_name:'20 L Can',cases:15,bottles:15,unit_rate:40,total_amount:600}],total_amount:600,created_by:'Suresh (Driver)'}
+     ];
+   }
+   if(!S.trips.length){
+     S.trips=[
+       {id:'TR-101',trip_no:'TR-26-001',vehicle_id:'AP 39 AB 1234',driver_employee_id:'M1',trip_date:today(),status:'loading',start_odometer:45210,end_odometer:null,loaded_at:null,closed_at:null,load_items:[{product_name:'20 L Can',cases:35,bottles:35},{product_name:'1 L',cases:10,bottles:120},{product_name:'500 ml',cases:10,bottles:240}]}
+     ];
+   }
+   if(!S.tripStops.length){
+     S.tripStops=[
+       {id:'TS-101-1',trip_id:'TR-101',stop_sequence:1,customer_id:'C1',order_id:'ORD-1',planned_cases:10,planned_bottles:10,items:[{product_name:'20 L Can',cases:10,bottles:10,rate:40}],status:'pending',arrived_at:null,arrival_lat:null,arrival_lng:null,distance_meters:null,completed_at:null,skip_reason:null},
+       {id:'TS-101-2',trip_id:'TR-101',stop_sequence:2,customer_id:'C2',order_id:'ORD-2',planned_cases:10,planned_bottles:65,items:[{product_name:'1 L',cases:5,bottles:60,rate:108},{product_name:'20 L Can',cases:5,bottles:5,rate:40}],status:'pending',arrived_at:null,arrival_lat:null,arrival_lng:null,distance_meters:null,completed_at:null,skip_reason:null},
+       {id:'TS-101-3',trip_id:'TR-101',stop_sequence:3,customer_id:'C3',order_id:null,planned_cases:5,planned_bottles:5,items:[{product_name:'20 L Can',cases:5,bottles:5,rate:40}],status:'pending',arrived_at:null,arrival_lat:null,arrival_lng:null,distance_meters:null,completed_at:null,skip_reason:null}
+     ];
+   }
+ })();
  if(!Array.isArray(S.cancelledBills))S.cancelledBills=[];if(!Array.isArray(S.deletedBills))S.deletedBills=[];if(!S.billDeletePin)S.billDeletePin=null;
 if(S.settings&&S.settings.pv!==2){var oldp=S.settings.products||[],np=defProducts();np.forEach(function(p){var m=oldp.filter(function(o){return o.n==p.n})[0];if(m&&m.r)p.r=m.r});S.settings.products=np;S.settings.pv=2}
 if(S.settings&&S.settings.address==null)S.settings.address='';
@@ -249,8 +297,8 @@ window.S=S;
 /* ---------- navigation ---------- */
 var NAV=[
  ['',[['dashboard','Dashboard','home']]],
- ['Billing',[['new-bill','New Bill','plus'],['bills','All Bills','doc'],['customers','Customers','users'],['payments','Payments','card'],['outstanding','Credit / Outstanding','clock']]],
- ['Stock',[['stock-overview','Plant Stock Overview','home'],['production','Production (Manufacturing)','factory'],['fg-transfer','Transfer to Godown','box'],['fg-dispatch','Dispatch to Customers','truck'],['fg-empload','Dispatch to Employees','truck'],['stock-in','Raw Material In (Purchase)','box'],['stock-out','Raw Material Used','box'],['current-stock','Raw Material Stock','hist'],['sales-visits','Salesman Visits & Orders','users']]],
+ ['Billing',[['new-bill','New Bill','plus'],['bills','All Bills','doc'],['customers','Customers','users'],['payments','Payments','card'],['outstanding','Credit / Outstanding','clock'],['day-close','Day Close & Handover','wallet']]],
+ ['Stock',[['my-route','My Delivery Route','truck'],['route-planner','Route Planner','truck'],['production-plan','Production Planning','factory'],['stock-overview','Plant Stock Overview','home'],['production','Production (Manufacturing)','factory'],['fg-transfer','Transfer to Godown','box'],['fg-dispatch','Dispatch to Customers','truck'],['fg-empload','Dispatch to Employees','truck'],['stock-in','Raw Material In (Purchase)','box'],['stock-out','Raw Material Used','box'],['current-stock','Raw Material Stock','hist'],['sales-visits','Salesman Visits & Orders','users']]],
  ['Expenses',[['diesel','Diesel Expenses','fuel'],['diesel-approvals','Diesel Approvals','doc'],['expenses','Other Expenses','list']]],
  ['Employees',[['employees','Employee Management','users'],['attendance','Attendance','cal'],['att-setup','Attendance Banners','cal'],['timings','In / Out Timings','clock'],['advances','Advances / Salary','wallet']]],
   ['',[['vehicles','Vehicle Management','box'],['contacts','Contacts Directory','users']]],
@@ -258,7 +306,7 @@ var NAV=[
  ['Reports',[['backup','Backup & Restore','download'],['price-variance','Price Variance Report','bars']]],
  ['Settings',[['users','User Accounts & Roles','users'],['settings','Business Settings','gear']]]
 ];
-var TITLES={customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview','price-variance':'Price Variance Report','users':'User Accounts & Roles'},NAVOPEN={},LASTCUR='';
+var TITLES={'my-route':'My Delivery Route','route-planner':'Route Planner','production-plan':'Production Planning','day-close':'Day Close & Handover',customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview','price-variance':'Price Variance Report','users':'User Accounts & Roles'},NAVOPEN={},LASTCUR='';
 function groupOf(id){for(var i=0;i<NAV.length;i++)for(var j=0;j<NAV[i][1].length;j++)if(NAV[i][1][j][0]==id)return NAV[i][0]||''}
 function buildNav(cur){
  var g0=groupOf(cur);if(cur!=LASTCUR&&g0)NAVOPEN[g0]=true;LASTCUR=cur;
@@ -266,6 +314,7 @@ function buildNav(cur){
   var links=g[1].filter(function(i){
     if (i[0] == 'price-variance' && CURRENT_ROLE == 'employee') return false;
     if (i[0] == 'users' && CURRENT_ROLE == 'employee') return false;
+    if ((i[0] == 'route-planner' || i[0] == 'production-plan') && CURRENT_ROLE == 'employee') return false;
     return true;
   }).map(function(i){TITLES[i[0]]=i[1];return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+i[1]+'</a>'}).join('');
   if(g[0] == 'Cafe' && CURRENT_ROLE == 'employee') return;
@@ -1866,6 +1915,11 @@ function render(){
    id = 'dashboard';
    location.hash = '#dashboard';
  }
+ if((id == 'route-planner' || id == 'production-plan') && CURRENT_ROLE == 'employee'){
+   toast('Access restricted: Planning screens are reserved for managers and owners.');
+   id = 'my-route';
+   location.hash = '#my-route';
+ }
  if(!PAGES[id])id='dashboard';if(id!='new-bill')EDITID=null;if(id!='customers')CV=null;
  if(id=='backup')BACKUP_MODE='daily';buildNav(id);buildTabs(id);closeMenu();document.body.classList.remove('searching');var pt=$('#ptitle');if(pt)pt.textContent=TITLES[id]||'';view.innerHTML=PAGES[id]();view.scrollTop=0;
  if(id=='new-bill')billInit();
@@ -2929,8 +2983,1605 @@ document.addEventListener('click', function(e) {
   }
 });
 
+/* ---------- Route & Operations Module (Larven BMS) ---------- */
+function tomorrow() {
+  var d = new Date();
+  d.setDate(d.getDate() + 1);
+  return ymd(d);
+}
+
+function haversineDist(lat1, lon1, lat2, lon2) {
+  if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return null;
+  var R = 6371e3; // metres
+  var p1 = lat1 * Math.PI / 180;
+  var p2 = lat2 * Math.PI / 180;
+  var dp = (lat2 - lat1) * Math.PI / 180;
+  var dl = (lon2 - lon1) * Math.PI / 180;
+  var a = Math.sin(dp / 2) * Math.sin(dp / 2) +
+          Math.cos(p1) * Math.cos(p2) *
+          Math.sin(dl / 2) * Math.sin(dl / 2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
+
+function getVehNo(id) {
+  var v = (S.vehicles || []).find(function(x) { return x.id == id || x.number == id; });
+  return v ? v.number : (id || 'Vehicle');
+}
+
+function getVehCapacity(id) {
+  var v = (S.vehicles || []).find(function(x) { return x.id == id || x.number == id; });
+  return (v && v.capacity_cases) ? v.capacity_cases : 100;
+}
+
+function renderUpiQr(el, vpa, payee, amt, billRef) {
+  if (!el) return;
+  var upiUri = 'upi://pay?pa=' + encodeURIComponent(vpa || 'larven@okaxis') +
+    '&pn=' + encodeURIComponent(payee || (S.settings && S.settings.name) || 'Larven Enterprises') +
+    '&am=' + encodeURIComponent(Number(amt || 0).toFixed(2)) +
+    '&cu=INR&tn=' + encodeURIComponent('Bill ' + (billRef || ''));
+  el.innerHTML = '';
+  if (typeof QRCode !== 'undefined') {
+    try {
+      new QRCode(el, {
+        text: upiUri,
+        width: 140,
+        height: 140,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel ? QRCode.CorrectLevel.M : 0
+      });
+    } catch(e) {
+      el.innerHTML = '<div style="padding:10px;border:1px dashed var(--brand);border-radius:6px;font-size:12px;color:var(--brand);text-align:center;">UPI Payee: <b>' + esc(payee) + '</b><br>VPA: <b>' + esc(vpa) + '</b><br>Amount: <b>' + inr(amt) + '</b></div>';
+    }
+  } else {
+    el.innerHTML = '<div style="padding:10px;border:1px dashed var(--brand);border-radius:6px;font-size:12px;color:var(--brand);text-align:center;">UPI Payee: <b>' + esc(payee) + '</b><br>VPA: <b>' + esc(vpa) + '</b><br>Amount: <b>' + inr(amt) + '</b></div>';
+  }
+}
+
+/* ---------- (2) Customer Location Capture ---------- */
+function captureCustomerLocation(customerId, onDone) {
+  var cust = (S.customers || []).find(function(c) { return c.id === customerId; });
+  if (!cust) return;
+
+  if (CURRENT_ROLE === 'employee' && cust.lat != null && cust.lng != null) {
+    openModal(
+      '<h3>Location Locked / లొకేషన్ మార్చలేరు</h3>' +
+      '<p class="pdesc">GPS coordinates are already recorded for <b>' + esc(cust.name) + '</b> (' + esc(cust.lat) + ', ' + esc(cust.lng) + ').</p>' +
+      '<p class="note" style="margin-top:10px;">Per operational policy, delivery staff can only capture initial location. Only managers or owners can update existing customer coordinates.</p>' +
+      '<div class="dact"><button type="button" class="btn" data-nb="close">Understood</button></div>'
+    );
+    return;
+  }
+
+  openModal(
+    '<h3>Capture GPS Location / జీపీఎస్ లొకేషన్</h3>' +
+    '<p class="pdesc">Capturing high-accuracy coordinates for <b>' + esc(cust.name) + '</b> (' + esc(cust.area || 'Area') + '). 3 successive readings will be taken to guarantee accuracy &le; 50 meters.</p>' +
+    '<div id="loc-status" style="margin:16px 0;padding:16px;background:var(--surface);border-radius:10px;text-align:center;">' +
+      '<div style="font-size:14px;color:var(--muted);">Click <b>Start GPS Capture</b> to acquire high-precision fix.</div>' +
+    '</div>' +
+    '<div class="dact" id="loc-actions">' +
+      '<button type="button" class="btn" id="btn-start-gps" data-loc-act="start-gps" data-cust-id="' + esc(cust.id) + '">Start GPS Capture</button>' +
+      '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+    '</div>'
+  );
+  window.__LOC_CAPTURE_CALLBACK = onDone || null;
+}
+
+function executeGpsCapture(custId) {
+  var cust = (S.customers || []).find(function(c) { return c.id === custId; });
+  if (!cust) return;
+  var statusEl = document.getElementById('loc-status');
+  var actionsEl = document.getElementById('loc-actions');
+  if (!navigator.geolocation) {
+    if (statusEl) statusEl.innerHTML = '<div style="color:var(--red);font-weight:700;">Geolocation is not supported by this browser.</div>';
+    return;
+  }
+  if (actionsEl) actionsEl.innerHTML = '<button type="button" class="btn" disabled>Capturing Readings...</button>';
+
+  var readings = [];
+  function step(n, total, done) {
+    if (statusEl) {
+      statusEl.innerHTML = '<div style="font-weight:700;color:var(--brand);font-size:16px;">Reading ' + n + ' of ' + total + '...</div>' +
+        '<div style="font-size:13px;color:var(--muted);margin-top:4px;">Acquiring satellite lock with high precision...</div>';
+    }
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        readings.push({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          acc: pos.coords.accuracy
+        });
+        if (n < total) {
+          setTimeout(function() { step(n + 1, total, done); }, 1200);
+        } else {
+          done(readings);
+        }
+      },
+      function(err) {
+        done(readings, err);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }
+
+  step(1, 3, function(results) {
+    var valid = results.filter(function(r) { return r && r.acc <= 50; });
+    if (valid.length === 0) {
+      var minAcc = results.length ? Math.min.apply(null, results.map(function(r){ return r.acc; })) : 999;
+      if (statusEl) {
+        statusEl.innerHTML = '<div style="color:var(--red);font-weight:700;">⚠️ GPS Accuracy Degraded (±' + Math.round(minAcc) + ' m > 50 m)</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:6px;">All 3 readings exceeded the 50-meter threshold. Please move outdoors with a clear sky view and retry.</div>';
+      }
+      if (actionsEl) {
+        actionsEl.innerHTML = '<button type="button" class="btn" data-loc-act="start-gps" data-cust-id="' + esc(cust.id) + '">Retry Capture</button>' +
+          '<button type="button" class="btn alt" data-nb="close">Cancel</button>';
+      }
+      return;
+    }
+
+    valid.sort(function(a, b) { return a.acc - b.acc; });
+    var best = valid[0];
+    var latFmt = Number(best.lat).toFixed(6);
+    var lngFmt = Number(best.lng).toFixed(6);
+    var accFmt = Number(best.acc).toFixed(1);
+
+    if (statusEl) {
+      statusEl.innerHTML = '<div style="text-align:left;background:#f7faf8;border:1px solid #b7eb8f;padding:14px;border-radius:10px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+          '<span class="pill p-green">±' + accFmt + ' m (High Precision)</span>' +
+          '<a href="https://www.google.com/maps?q=' + latFmt + ',' + lngFmt + '" target="_blank" rel="noopener" class="btn alt sm">🗺️ Preview on Google Maps</a>' +
+        '</div>' +
+        '<div style="font-size:14px;color:#333;"><b>Latitude:</b> ' + latFmt + '<br><b>Longitude:</b> ' + lngFmt + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:6px;">Captured across 3 GPS fixes. Meets &le; 50 m accuracy requirement.</div>' +
+      '</div>';
+    }
+    if (actionsEl) {
+      actionsEl.innerHTML = '<button type="button" class="btn green" data-loc-act="confirm-gps" data-cust-id="' + esc(cust.id) + '" data-lat="' + latFmt + '" data-lng="' + lngFmt + '" data-acc="' + accFmt + '">Confirm & Save Coordinates</button>' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>';
+    }
+  });
+}
+
+/* ---------- (1) Employee "My Route" (#my-route) ---------- */
+function myRoutePage() {
+  var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1';
+  var trips = (S.trips || []).slice();
+  var trip = null;
+  if (CURRENT_ROLE === 'employee') {
+    trip = trips.find(function(t) { return t.driver_employee_id === myEmpId && t.status !== 'settled'; }) ||
+           trips.find(function(t) { return t.status !== 'settled'; }) ||
+           trips[trips.length - 1];
+  } else {
+    var curTripId = window.__SELECTED_ROUTE_TRIP_ID;
+    trip = (curTripId && trips.find(function(t) { return t.id === curTripId; })) ||
+           trips.find(function(t) { return t.status !== 'settled'; }) ||
+           trips[trips.length - 1];
+  }
+
+  if (!trip) {
+    return head('My Delivery Route / నా రూట్') +
+      '<div class="card tw"><div class="empty">No active delivery trip assigned for today.<br><br>' +
+      (CURRENT_ROLE !== 'employee' ? '<a href="#route-planner" class="btn alt sm">Go to Route Planner →</a>' : '<small class="muted">Check with manager for trip assignment.</small>') +
+      '</div></div>';
+  }
+
+  var stops = (S.tripStops || []).filter(function(s) { return s.trip_id === trip.id; }).sort(function(a, b) { return a.stop_sequence - b.stop_sequence; });
+  var deliveredCount = stops.filter(function(s) { return s.status === 'delivered'; }).length;
+  var pendingCount = stops.filter(function(s) { return s.status === 'pending' || s.status === 'arrived'; }).length;
+  var skippedCount = stops.filter(function(s) { return s.status === 'skipped'; }).length;
+
+  var statusPill = trip.status === 'planned' || trip.status === 'loading'
+    ? '<span class="pill p-amber">Loading & Verification</span>'
+    : trip.status === 'on_route'
+    ? '<span class="pill p-green">On Route / డెలివరీలో ఉంది</span>'
+    : trip.status === 'completed'
+    ? '<span class="pill p-blue">Completed / డెలివరీలు పూర్తయ్యాయి</span>'
+    : '<span class="pill">Settled / క్లోజ్ చేయబడింది</span>';
+
+  var tripSelector = '';
+  if (CURRENT_ROLE !== 'employee' && trips.length > 1) {
+    tripSelector = '<div style="margin-bottom:12px;"><label style="font-size:12px;font-weight:700;color:var(--muted);display:block;margin-bottom:4px;">Select Vehicle Trip:</label>' +
+      '<select id="myroute-trip-select" class="fld-in" style="max-width:320px;">' +
+      trips.map(function(t) {
+        return '<option value="' + esc(t.id) + '"' + (t.id === trip.id ? ' selected' : '') + '>' + esc(t.trip_no || t.id) + ' · ' + esc(getVehNo(t.vehicle_id)) + ' (' + esc(t.status) + ')</option>';
+      }).join('') +
+      '</select></div>';
+  }
+
+  var html = head('My Delivery Route / నా రూట్') + tripSelector;
+
+  // Header Trip Card
+  html += '<div class="card" style="margin-bottom:14px;padding:16px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+      '<div>' +
+        '<h3 style="margin:0 0 4px;font-size:18px;">Trip #' + esc(trip.trip_no || trip.id) + ' · ' + esc(getVehNo(trip.vehicle_id)) + '</h3>' +
+        '<div style="font-size:13px;color:var(--muted);">' +
+          'Driver: <b>' + esc(empName(trip.driver_employee_id)) + '</b> · Date: <b>' + esc(trip.trip_date) + '</b>' +
+          (trip.start_odometer ? ' · Start KM: <b>' + num(trip.start_odometer) + '</b>' : '') +
+          (trip.end_odometer ? ' · End KM: <b>' + num(trip.end_odometer) + '</b>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div>' + statusPill + '</div>' +
+    '</div>' +
+  '</div>';
+
+  // Section 1: Load Checklist (if planned or loading)
+  if (trip.status === 'planned' || trip.status === 'loading') {
+    var loadItems = trip.load_items || [];
+    var totalLoadedCases = sum(loadItems, function(x) { return +x.cases || 0; });
+
+    html += '<div class="card" style="margin-bottom:16px;padding:16px;">' +
+      '<h3 style="margin-top:0;">1. Stock Loading & Odometer Checklist / లోడింగ్ సరిచూసుకోండి</h3>' +
+      '<p class="pdesc">Verify loaded stock counts before departure. Enter vehicle odometer reading to start route dispatch.</p>' +
+      '<table style="width:100%;margin:12px 0;border-collapse:collapse;">' +
+        '<thead><tr style="border-bottom:2px solid var(--line);text-align:left;">' +
+          '<th style="padding:8px 4px;">Product SKU</th>' +
+          '<th style="padding:8px 4px;">Loaded Cases</th>' +
+          '<th style="padding:8px 4px;">Bottles Total</th>' +
+        '</tr></thead>' +
+        '<tbody>' +
+        loadItems.map(function(li) {
+          return '<tr style="border-bottom:1px solid var(--line);">' +
+            '<td style="padding:8px 4px;font-weight:600;">' + esc(li.product_name) + '</td>' +
+            '<td style="padding:8px 4px;"><b>' + num(li.cases) + '</b> cases</td>' +
+            '<td style="padding:8px 4px;color:var(--muted);">' + num(li.bottles) + ' btl</td>' +
+          '</tr>';
+        }).join('') +
+        '<tr style="font-weight:800;background:var(--surface);"><td style="padding:8px 4px;">Total Vehicle Load</td><td style="padding:8px 4px;color:var(--brand);">' + num(totalLoadedCases) + ' cases</td><td style="padding:8px 4px;"></td></tr>' +
+        '</tbody>' +
+      '</table>' +
+      '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:14px;">' +
+        '<div class="fld" style="margin:0;min-width:200px;">' +
+          '<label for="route-start-km">Vehicle Start Odometer (KM) *</label>' +
+          '<input type="number" id="route-start-km" value="' + esc(trip.start_odometer || '') + '" placeholder="e.g. 45210" min="0" required>' +
+        '</div>' +
+        '<button type="button" class="btn green" data-route-act="confirm-loading" data-trip-id="' + esc(trip.id) + '">Confirm Loading & Start Trip 🚚</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // Section 2: Stop Itinerary
+  html += '<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+    '<h3 style="margin:0;">2. Delivery Itinerary (' + stops.length + ' Stops)</h3>' +
+    '<div class="gchips" style="margin:0;">' +
+      '<span class="chip on">Total <b>' + stops.length + '</b></span>' +
+      '<span class="chip">Delivered <b>' + deliveredCount + '</b></span>' +
+      '<span class="chip">Pending <b>' + pendingCount + '</b></span>' +
+      (skippedCount ? '<span class="chip">Skipped <b>' + skippedCount + '</b></span>' : '') +
+    '</div>' +
+  '</div>';
+
+  if (!stops.length) {
+    html += '<div class="card tw"><div class="empty">No stops added to this trip yet.</div></div>';
+  } else {
+    html += '<div style="display:grid;gap:12px;">';
+    stops.forEach(function(s) {
+      var cust = (S.customers || []).find(function(c) { return c.id === s.customer_id; }) || {};
+      var itemsText = (s.items || []).map(function(it) {
+        return num(it.cases || it.quantity_cases || 1) + ' × ' + esc(it.product_name);
+      }).join(', ') || (num(s.planned_cases || 0) + ' cases');
+
+      var stopBadge = s.status === 'delivered'
+        ? '<span class="pill p-green">Delivered 📦</span>'
+        : s.status === 'arrived'
+        ? '<span class="pill p-blue">Arrived at Location 🏁</span>'
+        : s.status === 'skipped'
+        ? '<span class="pill">Skipped (' + esc(s.skip_reason || '') + ')</span>'
+        : '<span class="pill p-amber">Pending Stop</span>';
+
+      var navBtn = '';
+      if (cust.lat && cust.lng) {
+        navBtn = '<a href="https://www.google.com/maps/dir/?api=1&destination=' + esc(cust.lat) + ',' + esc(cust.lng) + '" target="_blank" rel="noopener" class="btn alt sm">📍 Navigate (Google Maps)</a>';
+      } else {
+        navBtn = '<button type="button" class="btn alt sm" data-route-act="capture-loc" data-cust-id="' + esc(cust.id) + '">📍 Capture GPS Location</button>';
+      }
+
+      var actionBtns = '';
+      if (s.status === 'pending') {
+        actionBtns = '<button type="button" class="btn sm" data-route-act="arrive-stop" data-stop-id="' + esc(s.id) + '" data-trip-id="' + esc(trip.id) + '">Arrive at Stop 🏁</button>' +
+                     '<button type="button" class="btn alt sm" data-route-act="skip-modal" data-stop-id="' + esc(s.id) + '">Skip</button>';
+      } else if (s.status === 'arrived') {
+        actionBtns = '<button type="button" class="btn green sm" data-route-act="deliver-modal" data-stop-id="' + esc(s.id) + '" data-trip-id="' + esc(trip.id) + '">Deliver & Bill 📦</button>' +
+                     '<button type="button" class="btn alt sm" data-route-act="log-order-modal" data-stop-id="' + esc(s.id) + '">Log Future Order 📝</button>' +
+                     '<button type="button" class="btn alt sm" data-route-act="skip-modal" data-stop-id="' + esc(s.id) + '">Skip</button>';
+      } else if (s.status === 'delivered') {
+        var delRec = (S.deliveries || []).find(function(d) { return d.stop_id === s.id; });
+        actionBtns = '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' +
+          (delRec ? 'Bill #' + esc(delRec.bill_id) + ' · Total: ' + inr(delRec.amount || 0) + ' · Paid: ' + inr(delRec.paid || 0) + ' (' + esc(delRec.payment_mode || 'Cash') + ') · Cans returned: ' + num(delRec.empty_cans_returned || 0) : 'Completed') +
+          '</div>' +
+          '<button type="button" class="btn alt sm" data-route-act="log-order-modal" data-stop-id="' + esc(s.id) + '">Log Future Order 📝</button>';
+      }
+
+      html += '<div class="card" style="padding:14px;border-left:4px solid ' + (s.status === 'delivered' ? 'var(--green)' : s.status === 'arrived' ? '#1890ff' : 'var(--brand)') + ';">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">' +
+          '<div>' +
+            '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;">Stop #' + s.stop_sequence + '</div>' +
+            '<div style="font-size:16px;font-weight:800;color:#222;margin:2px 0;">' + esc(cust.name || 'Customer') + '</div>' +
+            '<div style="font-size:13px;color:var(--muted);">' +
+              (cust.phone ? '<a href="tel:' + esc(cust.phone) + '" class="pill" style="margin-right:6px;">' + esc(cust.phone) + ' 📞</a>' : '') +
+              esc(cust.area || '') +
+            '</div>' +
+            '<div style="font-size:13px;font-weight:600;margin-top:6px;color:var(--brand);">Planned: ' + itemsText + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div>' + stopBadge + '</div>' +
+            (s.distance_meters != null ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;">Arrival distance: ' + num(s.distance_meters) + ' m</div>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);align-items:center;">' +
+          navBtn + actionBtns +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Section 3: End Trip & Close
+  if (trip.status === 'on_route' || trip.status === 'completed') {
+    html += '<div class="card" style="margin-top:20px;padding:16px;background:var(--surface);">' +
+      '<h3 style="margin-top:0;">3. End Route & Return to Godown / ట్రిప్ ముగింపు</h3>' +
+      '<p class="pdesc">When deliveries are completed, enter ending odometer reading to close trip and proceed to Day Close & Cash Settlement.</p>' +
+      '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">' +
+        '<div class="fld" style="margin:0;min-width:200px;">' +
+          '<label for="route-end-km">Vehicle End Odometer (KM) *</label>' +
+          '<input type="number" id="route-end-km" value="' + esc(trip.end_odometer || '') + '" placeholder="e.g. 45285" min="0">' +
+        '</div>' +
+        '<button type="button" class="btn danger" data-route-act="close-trip" data-trip-id="' + esc(trip.id) + '">End Trip & Proceed to Day Close →</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  return html;
+}
+
+function showDeliverModal(stopId, tripId) {
+  var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+  if (!stop) return;
+  var cust = (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) || {};
+  var custBal = outstanding(cust.id);
+  var defRate = (S.settings.products && S.settings.products[0] && S.settings.products[0].r) || 40;
+
+  var items = (stop.items && stop.items.length) ? stop.items : [{ product_name: '20 L Can', cases: stop.planned_cases || 5, rate: defRate }];
+
+  openModal(
+    '<h3>Deliver & Generate Invoice / డెలివరీ & బిల్</h3>' +
+    '<p class="pdesc">Record delivered quantities, manual line item rates, and payment collection for <b>' + esc(cust.name) + '</b>.</p>' +
+    '<div style="background:var(--surface);padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;">' +
+      '<div>Current Dues: <b>' + inr(custBal) + '</b></div>' +
+      '<div>Credit Limit: <b>' + (cust.credit_limit ? inr(cust.credit_limit) : 'No limit') + '</b></div>' +
+    '</div>' +
+    '<div id="del-credit-warn" style="display:none;background:#fff3cd;color:#856404;border:1px solid #ffeeba;padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">' +
+      '⚠️ <b>Credit Warning:</b> Current outstanding + this bill exceeds customer credit limit. Delivery is still permitted.' +
+    '</div>' +
+    '<form id="deliver-stop-form" data-stop-id="' + esc(stop.id) + '" data-trip-id="' + esc(tripId) + '">' +
+      '<div style="border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:14px;">' +
+        '<table style="width:100%;border-collapse:collapse;" id="del-items-table">' +
+          '<thead style="background:var(--surface);text-align:left;font-size:12px;">' +
+            '<tr>' +
+              '<th style="padding:8px;">Product</th>' +
+              '<th style="padding:8px;width:90px;">Cases</th>' +
+              '<th style="padding:8px;width:110px;">Rate (₹)</th>' +
+              '<th style="padding:8px;text-align:right;">Total</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>' +
+          items.map(function(it, i) {
+            var r = it.rate != null ? it.rate : (it.unit_rate != null ? it.unit_rate : 40);
+            var q = it.cases || it.quantity_cases || 1;
+            var tot = q * r;
+            return '<tr class="del-row" data-idx="' + i + '">' +
+              '<td style="padding:8px;"><input type="text" class="del-prod" value="' + esc(it.product_name) + '" style="width:100%;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>' +
+              '<td style="padding:8px;"><input type="number" class="del-qty" value="' + q + '" min="1" style="width:100%;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>' +
+              '<td style="padding:8px;"><input type="number" class="del-rate" value="' + r + '" min="0" step="any" style="width:100%;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>' +
+              '<td style="padding:8px;text-align:right;font-weight:700;" class="del-line-tot">' + inr(tot) + '</td>' +
+            '</tr>';
+          }).join('') +
+          '</tbody>' +
+        '</table>' +
+        '<div style="padding:6px 8px;background:var(--surface);font-size:11px;color:var(--muted);">' +
+          '* Rates entered manually per Decision 2 (rate_source: \'manual\', no price-list enforcement).' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:16px;font-weight:800;margin-bottom:14px;padding:0 4px;">' +
+        '<span>Invoice Bill Total:</span>' +
+        '<span style="color:var(--brand);" id="del-bill-total">' + inr(sum(items, function(x){ return (x.cases||1) * (x.rate||40); })) + '</span>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="del-pay-mode">Payment Mode *</label>' +
+          '<select id="del-pay-mode">' +
+            '<option value="Cash">Cash</option>' +
+            '<option value="UPI">UPI / QR Code</option>' +
+            '<option value="Credit">Credit (Unpaid)</option>' +
+            '<option value="Cheque">Cheque</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="del-paid-amount">Amount Received (₹) *</label>' +
+          '<input type="number" id="del-paid-amount" value="' + sum(items, function(x){ return (x.cases||1) * (x.rate||40); }) + '" min="0">' +
+        '</div>' +
+      '</div>' +
+      '<div id="del-qr-container" style="display:none;background:var(--surface);border:1px dashed var(--brand);border-radius:10px;padding:14px;text-align:center;margin-bottom:14px;">' +
+        '<div style="font-weight:700;font-size:13px;color:var(--brand);margin-bottom:6px;">Scan UPI QR Code to Pay</div>' +
+        '<div id="del-upi-qr" style="display:inline-block;padding:8px;background:#fff;border-radius:8px;"></div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:6px;">UPI ID: ' + esc(S.settings.upiId || 'larven@okaxis') + ' · ' + esc(S.settings.upiPayee || S.settings.name || 'Larven Enterprises') + '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="del-empty-cans">Empty Cans Returned</label>' +
+          '<input type="number" id="del-empty-cans" value="' + (items[0] && items[0].product_name === '20 L Can' ? (items[0].cases || 5) : 0) + '" min="0">' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="del-notes">Delivery Notes</label>' +
+          '<input type="text" id="del-notes" placeholder="Optional notes">' +
+        '</div>' +
+      '</div>' +
+      '<div class="dact">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn green" id="btn-submit-delivery">Complete Delivery & Issue Bill</button>' +
+      '</div>' +
+    '</form>',
+    true
+  );
+
+  // Recalculate totals and check credit limit
+  recalcDeliveryModal(cust);
+}
+
+function recalcDeliveryModal(cust) {
+  var rows = document.querySelectorAll('.del-row');
+  var total = 0;
+  rows.forEach(function(r) {
+    var q = +((r.querySelector('.del-qty') || {}).value) || 0;
+    var rate = +((r.querySelector('.del-rate') || {}).value) || 0;
+    var lineTot = q * rate;
+    total += lineTot;
+    var lineEl = r.querySelector('.del-line-tot');
+    if (lineEl) lineEl.textContent = inr(lineTot);
+  });
+
+  var totEl = document.getElementById('del-bill-total');
+  if (totEl) totEl.textContent = inr(total);
+
+  var modeEl = document.getElementById('del-pay-mode');
+  var paidEl = document.getElementById('del-paid-amount');
+  if (modeEl && paidEl) {
+    if (modeEl.value === 'Credit') {
+      paidEl.value = '0';
+    } else if (paidEl.dataset.manual !== '1') {
+      paidEl.value = total;
+    }
+  }
+
+  // Credit limit non-blocking warning check
+  var warnEl = document.getElementById('del-credit-warn');
+  if (warnEl && cust && cust.credit_limit) {
+    var custBal = outstanding(cust.id);
+    if ((custBal + total) > cust.credit_limit) {
+      warnEl.style.display = 'block';
+    } else {
+      warnEl.style.display = 'none';
+    }
+  }
+
+  // UPI QR update if active
+  var qrContainer = document.getElementById('del-qr-container');
+  var qrBox = document.getElementById('del-upi-qr');
+  if (modeEl && modeEl.value === 'UPI') {
+    if (qrContainer) qrContainer.style.display = 'block';
+    renderUpiQr(qrBox, S.settings.upiId || 'larven@okaxis', S.settings.upiPayee || S.settings.name || 'Larven Enterprises', paidEl ? +paidEl.value : total, 'DEL');
+  } else {
+    if (qrContainer) qrContainer.style.display = 'none';
+  }
+}
+
+function showSkipModal(stopId) {
+  var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+  if (!stop) return;
+  var cust = (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) || {};
+
+  openModal(
+    '<h3>Skip Stop / స్టాప్ దాటవేయండి</h3>' +
+    '<p class="pdesc">Select the operational reason for skipping delivery at <b>' + esc(cust.name) + '</b>.</p>' +
+    '<form id="skip-stop-form" data-stop-id="' + esc(stop.id) + '">' +
+      '<div class="fld">' +
+        '<label for="skip-reason">Reason Code *</label>' +
+        '<select id="skip-reason" required>' +
+          '<option value="Shop Closed">Shop Closed / దుకాణం మూసివేయబడింది</option>' +
+          '<option value="Customer Unavailable">Customer Unavailable / యజమాని లేరు</option>' +
+          '<option value="Sufficient Stock">Sufficient Stock / తగినంత స్టాక్ ఉంది</option>' +
+          '<option value="Payment Dispute">Payment Dispute / మునుపటి బకాయిల వివాదం</option>' +
+          '<option value="Other">Other / ఇతర కారణం</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="skip-note">Notes / వివరాలు</label>' +
+        '<input type="text" id="skip-note" placeholder="Optional notes for manager review">' +
+      '</div>' +
+      '<div class="dact" style="margin-top:14px;">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn danger">Confirm Skip</button>' +
+      '</div>' +
+    '</form>'
+  );
+}
+
+function showLogOrderModal(stopId) {
+  var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+  if (!stop) return;
+  var cust = (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) || {};
+
+  openModal(
+    '<h3>Log Future Order / ఆర్డర్ నమోదు</h3>' +
+    '<p class="pdesc">Book tomorrow\'s or next scheduled order from customer stop for <b>' + esc(cust.name) + '</b>.</p>' +
+    '<form id="log-order-form" data-stop-id="' + esc(stop.id) + '" data-cust-id="' + esc(cust.id) + '">' +
+      '<div class="fld">' +
+        '<label for="lo-req-date">Requested Delivery Date *</label>' +
+        '<input type="date" id="lo-req-date" value="' + esc(tomorrow()) + '" required>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="lo-sku">Product SKU *</label>' +
+        '<select id="lo-sku">' +
+          (S.settings.products || defProducts()).map(function(p) {
+            return '<option value="' + esc(p.n) + '">' + esc(p.n) + ' (₹' + p.r + '/case)</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="lo-cases">Quantity (Cases / Cans) *</label>' +
+        '<input type="number" id="lo-cases" value="10" min="1" required>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="lo-notes">Order Notes</label>' +
+        '<input type="text" id="lo-notes" placeholder="e.g. Deliver before 11 AM">' +
+      '</div>' +
+      '<div class="dact" style="margin-top:14px;">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn green">Book Order</button>' +
+      '</div>' +
+    '</form>'
+  );
+}
+
+/* ---------- (3) Manager "Route Planner" (#route-planner) ---------- */
+var RP_STATE = {
+  date: today(),
+  vehicle: 'V1',
+  driver: 'M1',
+  stagedStops: []
+};
+
+function routePlannerPage() {
+  if (CURRENT_ROLE === 'employee') {
+    return head('Route Planner') + '<div class="card tw"><div class="empty">Access restricted: Route planning is reserved for manager and owner accounts.</div></div>';
+  }
+
+  var selDate = RP_STATE.date || today();
+  var pendingOrders = (S.orders || []).filter(function(o) {
+    return o.requested_date === selDate && o.status !== 'delivered' && o.status !== 'cancelled';
+  });
+
+  // Calculate vehicle load summary from staged stops
+  var loadAgg = {};
+  RP_STATE.stagedStops.forEach(function(s) {
+    (s.items || []).forEach(function(it) {
+      loadAgg[it.product_name] = (loadAgg[it.product_name] || 0) + (+it.cases || 0);
+    });
+  });
+  var totalStagedCases = Object.keys(loadAgg).reduce(function(a, k) { return a + loadAgg[k]; }, 0);
+  var vehCap = getVehCapacity(RP_STATE.vehicle);
+  var capPct = Math.round((totalStagedCases / vehCap) * 100);
+
+  var html = head('Route Planner & Vehicle Dispatch / రూట్ ప్లానర్') +
+    '<div class="card" style="margin-bottom:16px;padding:16px;">' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="rp-date">Delivery Date / తేదీ</label>' +
+          '<input type="date" id="rp-date" value="' + esc(selDate) + '">' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="rp-vehicle">Vehicle / వాహనం</label>' +
+          '<select id="rp-vehicle">' +
+            (S.vehicles || []).map(function(v) {
+              return '<option value="' + esc(v.id) + '"' + (v.id === RP_STATE.vehicle ? ' selected' : '') + '>' + esc(v.number) + ' · ' + esc(v.type) + ' (' + v.capacity_cases + ' cases max)</option>';
+            }).join('') +
+          '</select>' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="rp-driver">Driver / డ్రైవర్</label>' +
+          '<select id="rp-driver">' +
+            (S.employees || []).filter(function(e) { return e.role === 'Driver' || (e.duties && e.duties.indexOf('delivery') >= 0) || true; }).map(function(e) {
+              return '<option value="' + esc(e.id) + '"' + (e.id === RP_STATE.driver ? ' selected' : '') + '>' + esc(e.name) + ' (' + esc(e.role || 'Staff') + ')</option>';
+            }).join('') +
+          '</select>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  // Section 1: Orders Due for Selected Date
+  html += '<div style="margin-bottom:16px;">' +
+    '<h3 style="margin:0 0 8px;">1. Pending Orders Due (' + pendingOrders.length + ')</h3>' +
+    '<p class="pdesc" style="margin:0 0 10px;">Select pending customer orders to add to today\'s vehicle trip itinerary.</p>';
+
+  if (!pendingOrders.length) {
+    html += '<div class="card tw"><div class="empty">No pending orders due for ' + esc(selDate) + '.</div></div>';
+  } else {
+    html += '<div style="display:grid;gap:10px;">';
+    pendingOrders.forEach(function(o) {
+      var c = (S.customers || []).find(function(x) { return x.id === o.customer_id; }) || {};
+      var itemsDesc = (o.items || []).map(function(it) {
+        return num(it.cases) + ' × ' + esc(it.product_name);
+      }).join(', ');
+      var isStaged = RP_STATE.stagedStops.some(function(s) { return s.order_id === o.id; });
+
+      html += '<div class="card" style="padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+        '<div>' +
+          '<div style="font-weight:700;font-size:15px;">' + esc(c.name || 'Customer') + ' · <small class="muted">' + esc(c.area || '') + '</small></div>' +
+          '<div style="font-size:13px;color:var(--brand);margin-top:2px;">Ordered: <b>' + itemsDesc + '</b> · Amount: ' + inr(o.total_amount || 0) + '</div>' +
+        '</div>' +
+        '<div>' +
+          (isStaged
+            ? '<span class="pill p-green">✓ Added to Trip</span>'
+            : '<button type="button" class="btn sm" data-rp-act="add-order" data-order-id="' + esc(o.id) + '">➕ Add to Route</button>') +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Section 2: Trip Stop Organizer (Drag and Steppers)
+  html += '<div style="margin-bottom:16px;">' +
+    '<h3 style="margin:0 0 8px;">2. Planned Trip Stops (' + RP_STATE.stagedStops.length + ')</h3>' +
+    '<p class="pdesc" style="margin:0 0 10px;">Drag or use steppers (▲/▼) to sequence deliveries in optimal driving order.</p>';
+
+  if (!RP_STATE.stagedStops.length) {
+    html += '<div class="card tw"><div class="empty">No stops added yet. Click <b>➕ Add to Route</b> above to stage delivery stops.</div></div>';
+  } else {
+    html += '<div id="rp-stops-container" style="display:grid;gap:8px;">';
+    RP_STATE.stagedStops.forEach(function(s, idx) {
+      var c = (S.customers || []).find(function(x) { return x.id === s.customer_id; }) || {};
+      var itemsDesc = (s.items || []).map(function(it) {
+        return num(it.cases) + ' × ' + esc(it.product_name);
+      }).join(', ');
+
+      html += '<div class="card rp-stop-item" draggable="true" data-stop-idx="' + idx + '" style="padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:grab;">' +
+        '<div style="display:flex;align-items:center;gap:10px;">' +
+          '<span style="font-weight:800;font-size:14px;background:var(--surface);padding:4px 8px;border-radius:6px;color:var(--brand);">Stop #' + (idx + 1) + '</span>' +
+          '<div>' +
+            '<div style="font-weight:700;">' + esc(c.name || 'Customer') + ' · <small class="muted">' + esc(c.area || '') + '</small></div>' +
+            '<div style="font-size:12px;color:var(--muted);">' + itemsDesc + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;align-items:center;">' +
+          '<button type="button" class="btn alt sm" data-rp-act="move-up" data-idx="' + idx + '"' + (idx === 0 ? ' disabled' : '') + '>▲</button>' +
+          '<button type="button" class="btn alt sm" data-rp-act="move-down" data-idx="' + idx + '"' + (idx === RP_STATE.stagedStops.length - 1 ? ' disabled' : '') + '>▼</button>' +
+          '<button type="button" class="btn alt sm danger" data-rp-act="remove-stop" data-idx="' + idx + '">✕</button>' +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Section 3: Auto-Calculated Vehicle Load List & Dispatch
+  html += '<div class="card" style="padding:16px;background:var(--surface);">' +
+    '<h3 style="margin-top:0;">3. Auto-Calculated Vehicle Load List</h3>' +
+    '<div style="margin:12px 0;">';
+
+  if (Object.keys(loadAgg).length === 0) {
+    html += '<p class="muted">Add stops above to calculate total cases and vehicle utilization.</p>';
+  } else {
+    html += '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;">' +
+      Object.keys(loadAgg).map(function(k) {
+        return '<div style="background:#fff;padding:8px 14px;border-radius:8px;border:1px solid var(--line);">' +
+          '<span style="font-size:12px;color:var(--muted);display:block;">' + esc(k) + '</span>' +
+          '<b style="font-size:16px;color:var(--brand);">' + num(loadAgg[k]) + ' cases</b>' +
+        '</div>';
+      }).join('') +
+    '</div>' +
+    '<div style="margin-bottom:10px;">' +
+      '<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:4px;">' +
+        '<span>Vehicle Capacity Utilization:</span>' +
+        '<span style="color:' + (capPct > 100 ? 'var(--red)' : 'var(--green)') + ';">' + num(totalStagedCases) + ' / ' + num(vehCap) + ' cases (' + capPct + '%)</span>' +
+      '</div>' +
+      '<div style="height:10px;background:#e9ecef;border-radius:5px;overflow:hidden;">' +
+        '<div style="width:' + Math.min(100, capPct) + '%;height:100%;background:' + (capPct > 100 ? 'var(--red)' : 'var(--green)') + ';"></div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  html += '</div>' +
+    '<div style="text-align:right;margin-top:14px;">' +
+      '<button type="button" class="btn green" data-rp-act="dispatch-trip"' + (RP_STATE.stagedStops.length === 0 ? ' disabled' : '') + '>Create & Dispatch Trip 🚚</button>' +
+    '</div>' +
+  '</div>';
+
+  return html;
+}
+
+/* ---------- (4) Orders and "Production Plan" (#production-plan) ---------- */
+var PP_DATE = today();
+
+function productionPlanPage() {
+  if (CURRENT_ROLE === 'employee') {
+    return head('Production Planning') + '<div class="card tw"><div class="empty">Access restricted: Production planning is reserved for manager and owner accounts.</div></div>';
+  }
+
+  var selDate = PP_DATE || today();
+  var orders = (S.orders || []).filter(function(o) {
+    return o.requested_date === selDate && o.status !== 'delivered' && o.status !== 'cancelled';
+  });
+
+  // Calculate ordered cases per SKU
+  var orderedCases = {};
+  orders.forEach(function(o) {
+    (o.items || []).forEach(function(it) {
+      orderedCases[it.product_name] = (orderedCases[it.product_name] || 0) + (+it.cases || 0);
+    });
+  });
+
+  var bal = fgBal();
+  var skus = fgSizes();
+
+  var rows = skus.map(function(sku) {
+    var plantStock = fgGet(bal, 'P', sku);
+    var demand = orderedCases[sku] || 0;
+    var net = plantStock - demand;
+    var deficit = net < 0 ? Math.abs(net) : 0;
+
+    var statusCol = deficit > 0
+      ? '<span class="pill p-red">Deficit: -' + num(deficit) + ' Cases</span>'
+      : '<span class="pill p-green">Sufficient Stock (+' + num(net) + ')</span>';
+
+    var actionCol = '<button type="button" class="btn sm ' + (deficit > 0 ? 'green' : 'alt') + '" data-pp-act="batch-modal" data-sku="' + esc(sku) + '" data-deficit="' + deficit + '">➕ ' + (deficit > 0 ? 'Produce Deficit' : 'New Batch') + '</button>';
+
+    return [
+      '<b>' + esc(sku) + '</b>',
+      num(plantStock) + ' cases',
+      num(demand) + ' cases',
+      '<span style="font-weight:700;color:' + (net < 0 ? 'var(--red)' : 'var(--green)') + ';">' + (net >= 0 ? '+' : '') + num(net) + ' cases</span>',
+      statusCol,
+      actionCol
+    ];
+  });
+
+  var html = head('Production Planning / ఉత్పత్తి ప్రణాళిక') +
+    '<div class="card" style="margin-bottom:16px;padding:16px;">' +
+      '<div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">' +
+        '<div class="fld" style="margin:0;min-width:220px;">' +
+          '<label for="pp-date">Target Order Date / తేదీ</label>' +
+          '<input type="date" id="pp-date" value="' + esc(selDate) + '">' +
+        '</div>' +
+        '<div style="font-size:13px;color:var(--muted);">' +
+          'Pending Orders for Date: <b>' + orders.length + '</b> · Plant Stock Reference: <b>Location P</b>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card tw" style="padding:6px;">' +
+      table(['Product / Size', 'Plant Stock Now', 'Orders Due (' + esc(selDate) + ')', 'Net Balance', 'Status', 'Action'], rows) +
+    '</div>';
+
+  return html;
+}
+
+function showProductionBatchModal(sku, deficit) {
+  var batchNo = 'BATCH-' + today().replace(/-/g, '') + '-' + Math.floor(10 + Math.random() * 90);
+  var casesPrefill = deficit > 0 ? deficit : 20;
+  var btlPrefill = casesPrefill * fgPer(sku);
+
+  openModal(
+    '<h3>Create Production Batch / బ్యాచ్ ఉత్పత్తి</h3>' +
+    '<p class="pdesc">Record manufacturing run for <b>' + esc(sku) + '</b>. Stock will be credited directly to Plant inventory (Location P).</p>' +
+    '<form id="prod-batch-form" data-sku="' + esc(sku) + '">' +
+      '<div class="fld">' +
+        '<label for="pb-no">Batch Number *</label>' +
+        '<input type="text" id="pb-no" value="' + esc(batchNo) + '" required>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+        '<div class="fld">' +
+          '<label for="pb-cases">Quantity to Produce (Cases) *</label>' +
+          '<input type="number" id="pb-cases" value="' + casesPrefill + '" min="1" required>' +
+        '</div>' +
+        '<div class="fld">' +
+          '<label for="pb-bottles">Bottles Count</label>' +
+          '<input type="number" id="pb-bottles" value="' + btlPrefill + '" readonly style="background:var(--surface);">' +
+        '</div>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="pb-notes">Batch Notes</label>' +
+        '<input type="text" id="pb-notes" placeholder="e.g. Morning shift run 1">' +
+      '</div>' +
+      '<div class="dact" style="margin-top:14px;">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn green">Record Production & Credit Stock</button>' +
+      '</div>' +
+    '</form>'
+  );
+}
+
+/* ---------- (5) Day Close & Cash Handover (#day-close) ---------- */
+function dayClosePage() {
+  var trips = (S.trips || []).slice();
+  var trip = null;
+  if (CURRENT_ROLE === 'employee') {
+    var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1';
+    trip = trips.find(function(t) { return t.driver_employee_id === myEmpId && t.status !== 'settled'; }) ||
+           trips.find(function(t) { return t.driver_employee_id === myEmpId; }) ||
+           trips[trips.length - 1];
+  } else {
+    var curTripId = window.__SELECTED_DAYCLOSE_TRIP_ID;
+    trip = (curTripId && trips.find(function(t) { return t.id === curTripId; })) ||
+           trips.find(function(t) { return t.status !== 'settled'; }) ||
+           trips[trips.length - 1];
+  }
+
+  if (!trip) {
+    return head('Day Close & Cash Handover / నగదు అప్పగింత') +
+      '<div class="card tw"><div class="empty">No vehicle trips found to reconcile today.</div></div>';
+  }
+
+  // Calculate deliveries for this trip
+  var deliveries = (S.deliveries || []).filter(function(d) {
+    return d.trip_id === trip.id || (S.tripStops || []).some(function(s) { return s.trip_id === trip.id && s.id === d.stop_id; });
+  });
+
+  // Calculate bill payments and expenses
+  var grossInvoiced = sum(deliveries, function(d) { return +d.amount || 0; });
+  var grossCash = sum(deliveries, function(d) { return d.payment_mode === 'Cash' ? (+d.paid || 0) : 0; });
+  var totalUpi = sum(deliveries, function(d) { return d.payment_mode === 'UPI' ? (+d.paid || 0) : 0; });
+  var creditDues = sum(deliveries, function(d) { return Math.max(0, (+d.amount || 0) - (+d.paid || 0)); });
+  var emptyCans = sum(deliveries, function(d) { return +d.empty_cans_returned || 0; });
+
+  // Trip expenses (diesel, toll, etc.)
+  var tripExpenses = sum((S.expenses || []).filter(function(e) {
+    return (e.trip_id && e.trip_id === trip.id) || (e.vehicle && e.vehicle === trip.vehicle_id && e.date === trip.trip_date);
+  }), function(e) { return +e.amount || 0; });
+
+  // Formula: Net Cash = Gross Cash - Trip Expenses
+  var netCash = Math.max(0, grossCash - tripExpenses);
+
+  var tripSelect = '';
+  if (CURRENT_ROLE !== 'employee' && trips.length > 1) {
+    tripSelect = '<div style="margin-bottom:12px;"><label style="font-size:12px;font-weight:700;color:var(--muted);display:block;margin-bottom:4px;">Reconcile Trip:</label>' +
+      '<select id="dayclose-trip-select" class="fld-in" style="max-width:320px;">' +
+      trips.map(function(t) {
+        return '<option value="' + esc(t.id) + '"' + (t.id === trip.id ? ' selected' : '') + '>' + esc(t.trip_no || t.id) + ' · ' + esc(getVehNo(t.vehicle_id)) + ' · ' + esc(empName(t.driver_employee_id)) + '</option>';
+      }).join('') +
+      '</select></div>';
+  }
+
+  var html = head('Day Close & Cash Handover / నగదు అప్పగింత') + tripSelect +
+    '<div class="card" style="margin-bottom:16px;padding:16px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+        '<div>' +
+          '<h3 style="margin:0 0 4px;font-size:18px;">Trip #' + esc(trip.trip_no || trip.id) + ' Settlement</h3>' +
+          '<div style="font-size:13px;color:var(--muted);">' +
+            'Vehicle: <b>' + esc(getVehNo(trip.vehicle_id)) + '</b> · Driver: <b>' + esc(empName(trip.driver_employee_id)) + '</b> · Date: <b>' + esc(trip.trip_date) + '</b>' +
+          '</div>' +
+        '</div>' +
+        '<div>' +
+          (trip.status === 'settled'
+            ? '<span class="pill p-green">✓ Settled & Handed Over</span>'
+            : '<span class="pill p-amber">Pending Settlement</span>') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  // 4 KPI Summary Tiles
+  html += kp([
+    ['Total Invoiced Sales', inr(grossInvoiced)],
+    ['Gross Cash Collected', inr(grossCash)],
+    ['UPI / Online Payments', inr(totalUpi)],
+    ['Credit Dues / Balance', inr(creditDues)]
+  ]);
+
+  // Net Cash Calculation Card
+  html += '<div class="card" style="background:var(--brand-soft);border:1px solid var(--brand);padding:16px;border-radius:12px;margin:16px 0;">' +
+    '<div style="font-size:13px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:0.5px;">Driver Settlement Reconciliation</div>' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:10px;">' +
+      '<div>' +
+        '<div style="font-size:12px;color:var(--muted);">Gross Cash Collections</div>' +
+        '<div style="font-size:18px;font-weight:700;">' + inr(grossCash) + '</div>' +
+      '</div>' +
+      '<div style="font-size:20px;font-weight:700;color:var(--red);">−</div>' +
+      '<div>' +
+        '<div style="font-size:12px;color:var(--muted);">Trip Fuel & Toll Expenses</div>' +
+        '<div style="font-size:18px;font-weight:700;color:var(--red);">' + inr(tripExpenses) + '</div>' +
+      '</div>' +
+      '<div style="font-size:20px;font-weight:700;color:var(--brand);">=</div>' +
+      '<div>' +
+        '<div style="font-size:12px;color:var(--brand);font-weight:700;">Net Cash to Hand Over</div>' +
+        '<div style="font-size:24px;font-weight:800;color:var(--brand);" id="net-cash-display">' + inr(netCash) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--muted);margin-top:10px;border-top:1px dashed var(--line);padding-top:8px;">' +
+      'Empty Cans Collected: <b>' + num(emptyCans) + ' cans</b> · Digital UPI Receipts: <b>' + inr(totalUpi) + '</b>' +
+    '</div>' +
+  '</div>';
+
+  // Supervisor Cash Handover Form
+  if (trip.status !== 'settled') {
+    var managers = (S.employees || []).filter(function(e) { return e.role === 'Manager' || e.role === 'Owner'; });
+    if (!managers.length) managers = [{ id: 'owner-1', name: S.settings.owner || 'Muni Prasad', role: 'Owner' }];
+
+    html += '<form id="dayclose-handover-form" class="card form" data-trip-id="' + esc(trip.id) + '" style="padding:16px;">' +
+      '<h3 style="margin-top:0;">Supervisor Cash Handover / నగదు అప్పగింత ఫారం</h3>' +
+      '<p class="pdesc">Driver hands over physical net cash and digital UPI reconciliation receipts to the shift supervisor.</p>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:12px 0;">' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="ho-supervisor">Supervisor / Manager *</label>' +
+          '<select id="ho-supervisor" required>' +
+            managers.map(function(m) {
+              return '<option value="' + esc(m.id) + '">' + esc(m.name) + ' (' + esc(m.role || 'Supervisor') + ')</option>';
+            }).join('') +
+          '</select>' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="ho-cash">Net Physical Cash (₹) *</label>' +
+          '<input type="number" id="ho-cash" value="' + netCash + '" min="0" required>' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="ho-upi">UPI Collections Verified (₹)</label>' +
+          '<input type="number" id="ho-upi" value="' + totalUpi + '" readonly style="background:var(--surface);">' +
+        '</div>' +
+        '<div class="fld" style="margin:0;">' +
+          '<label for="ho-cans">Empty Cans Returned</label>' +
+          '<input type="number" id="ho-cans" value="' + emptyCans + '" min="0">' +
+        '</div>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label for="ho-notes">Settlement Remarks / Notes</label>' +
+        '<input type="text" id="ho-notes" placeholder="e.g. Fuel bill ₹350 attached; cash verified">' +
+      '</div>' +
+      '<div class="dact" style="margin-top:14px;">' +
+        '<button type="submit" class="btn green" id="btn-submit-handover">Confirm Handover & Settle Trip</button>' +
+      '</div>' +
+    '</form>';
+  } else {
+    var hoRec = (S.cashHandovers || []).find(function(h) { return h.trip_id === trip.id; });
+    html += '<div class="card" style="padding:16px;border:1px solid var(--green);">' +
+      '<div style="display:flex;align-items:center;gap:10px;">' +
+        '<div class="okic" style="margin:0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg></div>' +
+        '<div>' +
+          '<h3 style="margin:0 0 4px;">Trip Settlement Finalized</h3>' +
+          '<div style="font-size:13px;color:var(--muted);">' +
+            (hoRec ? 'Receipt: <b>' + esc(hoRec.handover_no) + '</b> · Settled at: ' + esc(hoRec.handed_over_at) + ' · Net Cash: <b>' + inr(hoRec.net_cash_amount) + '</b>' : 'Trip settled') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  return html;
+}
+
+function showHandoverReceiptModal(hoRec, trip) {
+  openModal(
+    '<div class="okic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg></div>' +
+    '<h3>Settlement Handover Finalized</h3>' +
+    '<p class="pdesc">Cash handover receipt <b>#' + esc(hoRec.handover_no) + '</b> successfully recorded.</p>' +
+    '<div style="background:var(--surface);border-radius:10px;padding:14px;margin:14px 0;font-size:13px;">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Trip Ref:</span><b>#' + esc(trip.trip_no || trip.id) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Vehicle:</span><b>' + esc(getVehNo(trip.vehicle_id)) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Driver:</span><b>' + esc(empName(trip.driver_employee_id)) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Supervisor:</span><b>' + esc(empName(hoRec.manager_profile_id)) + '</b></div>' +
+      '<div style="border-top:1px dashed var(--line);margin:8px 0;"></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Net Cash Handed Over:</span><b style="color:var(--green);font-size:15px;">' + inr(hoRec.net_cash_amount) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>UPI Receipts Confirmed:</span><b>' + inr(hoRec.upi_amount) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;"><span>Empty Cans Returned:</span><b>' + num(hoRec.empty_cans) + ' cans</b></div>' +
+    '</div>' +
+    '<div class="dact">' +
+      '<button type="button" class="btn" data-nb="close">Done</button>' +
+    '</div>',
+    true
+  );
+}
+
+/* Event Delegation for Operations Actions */
+document.addEventListener('click', function(e) {
+  var t = e.target.closest('[data-route-act], [data-loc-act], [data-rp-act], [data-pp-act]');
+  if (!t) return;
+
+  // Location Capture
+  var locAct = t.dataset.locAct;
+  if (locAct === 'start-gps') {
+    executeGpsCapture(t.dataset.custId);
+    return;
+  }
+  if (locAct === 'confirm-gps') {
+    var custId = t.dataset.custId;
+    var cust = (S.customers || []).find(function(c) { return c.id === custId; });
+    if (cust) {
+      cust.lat = Number(t.dataset.lat);
+      cust.lng = Number(t.dataset.lng);
+      cust.accuracy_m = Number(t.dataset.acc);
+      cust.location_set_by = (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE;
+      cust.location_set_at = new Date().toISOString();
+      save();
+      closeModal();
+      toast('GPS Coordinates saved for ' + cust.name + ' (±' + cust.accuracy_m + ' m)!');
+      if (typeof window.__LOC_CAPTURE_CALLBACK === 'function') {
+        window.__LOC_CAPTURE_CALLBACK();
+        window.__LOC_CAPTURE_CALLBACK = null;
+      }
+      render();
+    }
+    return;
+  }
+
+  // Route Actions
+  var routeAct = t.dataset.routeAct;
+  if (routeAct === 'capture-loc') {
+    captureCustomerLocation(t.dataset.custId, function() { render(); });
+    return;
+  }
+  if (routeAct === 'confirm-loading') {
+    var tripId = t.dataset.tripId;
+    var trip = (S.trips || []).find(function(x) { return x.id === tripId; });
+    var startKm = $('#route-start-km') ? +$('#route-start-km').value : 0;
+    if (!(startKm >= 0)) {
+      toast('Please enter vehicle start odometer reading');
+      return;
+    }
+    if (trip) {
+      trip.status = 'on_route';
+      trip.start_odometer = startKm;
+      trip.loaded_at = new Date().toISOString();
+      save();
+      toast('Trip started! Drive safely.');
+      render();
+    }
+    return;
+  }
+  if (routeAct === 'arrive-stop') {
+    var stopId = t.dataset.stopId;
+    var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+    if (!stop) return;
+    var cust = (S.customers || []).find(function(c) { return c.id === stop.customer_id; });
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          var dist = (cust && cust.lat && cust.lng) ? haversineDist(pos.coords.latitude, pos.coords.longitude, cust.lat, cust.lng) : null;
+          stop.status = 'arrived';
+          stop.arrived_at = new Date().toISOString();
+          stop.arrival_lat = pos.coords.latitude;
+          stop.arrival_lng = pos.coords.longitude;
+          stop.distance_meters = dist;
+          save();
+          toast('Arrived at stop! ' + (dist != null ? '(' + dist + ' m away)' : ''));
+          render();
+        },
+        function() {
+          stop.status = 'arrived';
+          stop.arrived_at = new Date().toISOString();
+          save();
+          toast('Arrived at stop');
+          render();
+        },
+        { enableHighAccuracy: true, timeout: 6000 }
+      );
+    } else {
+      stop.status = 'arrived';
+      stop.arrived_at = new Date().toISOString();
+      save();
+      toast('Arrived at stop');
+      render();
+    }
+    return;
+  }
+  if (routeAct === 'deliver-modal') {
+    showDeliverModal(t.dataset.stopId, t.dataset.tripId);
+    return;
+  }
+  if (routeAct === 'skip-modal') {
+    showSkipModal(t.dataset.stopId);
+    return;
+  }
+  if (routeAct === 'log-order-modal') {
+    showLogOrderModal(t.dataset.stopId);
+    return;
+  }
+  if (routeAct === 'close-trip') {
+    var tripId = t.dataset.tripId;
+    var trip = (S.trips || []).find(function(x) { return x.id === tripId; });
+    var endKm = $('#route-end-km') ? +$('#route-end-km').value : 0;
+    if (!(endKm >= (trip ? (trip.start_odometer || 0) : 0))) {
+      toast('Ending odometer must be greater than or equal to start odometer (' + (trip ? trip.start_odometer : 0) + ' KM)');
+      return;
+    }
+    if (trip) {
+      trip.status = 'completed';
+      trip.end_odometer = endKm;
+      trip.closed_at = new Date().toISOString();
+      save();
+      toast('Trip completed! Proceed to Day Close & Cash Settlement.');
+      location.hash = '#day-close';
+      render();
+    }
+    return;
+  }
+
+  // Route Planner Actions
+  var rpAct = t.dataset.rpAct;
+  if (rpAct === 'add-order') {
+    var orderId = t.dataset.orderId;
+    var ord = (S.orders || []).find(function(o) { return o.id === orderId; });
+    if (ord && !RP_STATE.stagedStops.some(function(s) { return s.order_id === ord.id; })) {
+      RP_STATE.stagedStops.push({
+        customer_id: ord.customer_id,
+        order_id: ord.id,
+        planned_cases: sum(ord.items || [], function(x) { return +x.cases || 0; }),
+        items: ord.items || []
+      });
+      render();
+    }
+    return;
+  }
+  if (rpAct === 'remove-stop') {
+    var idx = parseInt(t.dataset.idx, 10);
+    RP_STATE.stagedStops.splice(idx, 1);
+    render();
+    return;
+  }
+  if (rpAct === 'move-up') {
+    var idx = parseInt(t.dataset.idx, 10);
+    if (idx > 0) {
+      var tmp = RP_STATE.stagedStops[idx];
+      RP_STATE.stagedStops[idx] = RP_STATE.stagedStops[idx - 1];
+      RP_STATE.stagedStops[idx - 1] = tmp;
+      render();
+    }
+    return;
+  }
+  if (rpAct === 'move-down') {
+    var idx = parseInt(t.dataset.idx, 10);
+    if (idx < RP_STATE.stagedStops.length - 1) {
+      var tmp = RP_STATE.stagedStops[idx];
+      RP_STATE.stagedStops[idx] = RP_STATE.stagedStops[idx + 1];
+      RP_STATE.stagedStops[idx + 1] = tmp;
+      render();
+    }
+    return;
+  }
+  if (rpAct === 'dispatch-trip') {
+    if (!RP_STATE.stagedStops.length) return;
+    var dt = $('#rp-date') ? $('#rp-date').value : RP_STATE.date;
+    var veh = $('#rp-vehicle') ? $('#rp-vehicle').value : RP_STATE.vehicle;
+    var drv = $('#rp-driver') ? $('#rp-driver').value : RP_STATE.driver;
+    var tripId = nid('TR', S.trips);
+    var tripNo = 'TR-' + dt.replace(/-/g, '').slice(2) + '-' + Math.floor(100 + Math.random() * 900);
+
+    var loadMap = {};
+    RP_STATE.stagedStops.forEach(function(s) {
+      (s.items || []).forEach(function(it) {
+        loadMap[it.product_name] = (loadMap[it.product_name] || 0) + (+it.cases || 0);
+      });
+    });
+    var loadItems = Object.keys(loadMap).map(function(k) {
+      var pr = (S.settings.products || []).find(function(p) { return p.n === k; });
+      var c = (pr && pr.c) || 1;
+      return { product_name: k, cases: loadMap[k], bottles: loadMap[k] * c };
+    });
+
+    var newTrip = {
+      id: tripId,
+      trip_no: tripNo,
+      vehicle_id: veh,
+      driver_employee_id: drv,
+      trip_date: dt,
+      status: 'loading',
+      start_odometer: null,
+      end_odometer: null,
+      loaded_at: null,
+      closed_at: null,
+      load_items: loadItems
+    };
+    S.trips.push(newTrip);
+
+    RP_STATE.stagedStops.forEach(function(s, i) {
+      var stopId = nid('TS', S.tripStops);
+      S.tripStops.push({
+        id: stopId,
+        trip_id: tripId,
+        stop_sequence: i + 1,
+        customer_id: s.customer_id,
+        order_id: s.order_id || null,
+        planned_cases: s.planned_cases,
+        planned_bottles: 0,
+        items: s.items || [],
+        status: 'pending',
+        arrived_at: null,
+        arrival_lat: null,
+        arrival_lng: null,
+        distance_meters: null,
+        completed_at: null,
+        skip_reason: null
+      });
+      if (s.order_id) {
+        var ord = (S.orders || []).find(function(o) { return o.id === s.order_id; });
+        if (ord) ord.status = 'planned';
+      }
+    });
+
+    RP_STATE.stagedStops = [];
+    save();
+    toast('Trip #' + tripNo + ' dispatched with ' + loadItems.length + ' SKUs! Ready for loading verification.');
+    location.hash = '#my-route';
+    render();
+    return;
+  }
+
+  // Production Plan Actions
+  var ppAct = t.dataset.ppAct;
+  if (ppAct === 'batch-modal') {
+    showProductionBatchModal(t.dataset.sku, +t.dataset.deficit);
+    return;
+  }
+});
+
+/* Event Delegation for Operations Form Submits */
+document.addEventListener('submit', function(e) {
+  var f = e.target;
+  if (!f) return;
+
+  if (f.id === 'deliver-stop-form') {
+    e.preventDefault();
+    var stopId = f.dataset.stopId;
+    var tripId = f.dataset.tripId;
+    var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+    var cust = stop ? (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) : null;
+
+    var rows = f.querySelectorAll('.del-row');
+    var lineItems = [];
+    var totalAmt = 0;
+    var totalCases = 0;
+
+    rows.forEach(function(r) {
+      var prod = (r.querySelector('.del-prod') || {}).value;
+      var qty = +((r.querySelector('.del-qty') || {}).value) || 0;
+      var rate = +((r.querySelector('.del-rate') || {}).value) || 0;
+      if (qty > 0) {
+        var tot = qty * rate;
+        totalAmt += tot;
+        totalCases += qty;
+        lineItems.push({
+          p: prod,
+          q: qty,
+          r: rate,
+          rate_source: 'manual',
+          entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
+        });
+      }
+    });
+
+    if (!lineItems.length) {
+      toast('Please enter delivered items');
+      return;
+    }
+
+    var payMode = $('#del-pay-mode') ? $('#del-pay-mode').value : 'Cash';
+    var paidAmt = $('#del-paid-amount') ? +$('#del-paid-amount').value : totalAmt;
+    var emptyCans = $('#del-empty-cans') ? +$('#del-empty-cans').value : 0;
+    var notes = $('#del-notes') ? $('#del-notes').value.trim() : '';
+
+    var deliveryPayload = {
+      stop_id: stopId,
+      trip_id: tripId,
+      customer_id: cust ? cust.id : '',
+      items: lineItems,
+      total: totalAmt,
+      paid: paidAmt,
+      payment_mode: payMode,
+      empty_cans_returned: emptyCans,
+      notes: notes,
+      entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
+    };
+
+    // Offline / outbox fallback per Decision 3
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      var provId = queueOfflineDelivery(tripId, deliveryPayload);
+      if (stop) {
+        stop.status = 'delivered';
+        stop.completed_at = new Date().toISOString();
+        stop.provisional_receipt = provId;
+      }
+      save();
+      closeModal();
+      toast('Saved offline to Outbox! Provisional Receipt: ' + provId + '. Will sync when online.');
+      render();
+      return;
+    }
+
+    // Online delivery issuance
+    var billId = nid('B', S.bills);
+    S.bills.push({
+      id: billId,
+      date: today(),
+      cust: cust ? cust.id : '',
+      items: lineItems,
+      total: totalAmt,
+      paid: paidAmt,
+      mode: payMode,
+      rate_source: 'manual',
+      entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE,
+      trip_id: tripId
+    });
+
+    if (paidAmt > 0) {
+      S.payments.push({
+        id: nid('P', S.payments),
+        date: today(),
+        cust: cust ? cust.id : '',
+        amount: paidAmt,
+        mode: payMode,
+        bill: billId
+      });
+    }
+
+    var delId = nid('DEL', S.deliveries);
+    S.deliveries.push({
+      id: delId,
+      stop_id: stopId,
+      trip_id: tripId,
+      bill_id: billId,
+      delivered_at: new Date().toISOString(),
+      delivered_cases: totalCases,
+      amount: totalAmt,
+      paid: paidAmt,
+      payment_mode: payMode,
+      empty_cans_returned: emptyCans,
+      entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
+    });
+
+    if (stop) {
+      stop.status = 'delivered';
+      stop.completed_at = new Date().toISOString();
+      if (stop.order_id) {
+        var ord = (S.orders || []).find(function(o) { return o.id === stop.order_id; });
+        if (ord) ord.status = 'delivered';
+      }
+    }
+
+    save();
+    closeModal();
+    toast('Delivery recorded! Bill #' + billId + ' issued (' + inr(totalAmt) + ').');
+    render();
+    return;
+  }
+
+  if (f.id === 'skip-stop-form') {
+    e.preventDefault();
+    var stopId = f.dataset.stopId;
+    var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
+    var reason = $('#skip-reason') ? $('#skip-reason').value : 'Other';
+    var note = $('#skip-note') ? $('#skip-note').value.trim() : '';
+
+    if (stop) {
+      stop.status = 'skipped';
+      stop.skip_reason = reason + (note ? ' - ' + note : '');
+      stop.completed_at = new Date().toISOString();
+      save();
+      closeModal();
+      toast('Stop marked as skipped');
+      render();
+    }
+    return;
+  }
+
+  if (f.id === 'log-order-form') {
+    e.preventDefault();
+    var custId = f.dataset.custId;
+    var cust = (S.customers || []).find(function(c) { return c.id === custId; });
+    var reqDate = $('#lo-req-date') ? $('#lo-req-date').value : tomorrow();
+    var sku = $('#lo-sku') ? $('#lo-sku').value : '20 L Can';
+    var cases = $('#lo-cases') ? +$('#lo-cases').value : 10;
+    var notes = $('#lo-notes') ? $('#lo-notes').value.trim() : '';
+
+    var pr = (S.settings.products || defProducts()).find(function(p) { return p.n === sku; });
+    var rate = (pr && pr.r) || 40;
+    var btl = cases * ((pr && pr.c) || 1);
+    var tot = cases * rate;
+
+    var ordId = nid('ORD', S.orders);
+    var ordNo = 'ORD-' + today().replace(/-/g, '').slice(2) + '-' + Math.floor(1000 + Math.random() * 9000);
+
+    S.orders.push({
+      id: ordId,
+      order_no: ordNo,
+      customer_id: custId,
+      order_date: today(),
+      requested_date: reqDate,
+      status: 'new',
+      source: 'stop',
+      notes: notes,
+      items: [{ product_name: sku, cases: cases, bottles: btl, unit_rate: rate, total_amount: tot }],
+      total_amount: tot,
+      created_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
+    });
+
+    save();
+    closeModal();
+    toast('Future order booked for ' + (cust ? cust.name : 'Customer') + ' on ' + reqDate + '!');
+    return;
+  }
+
+  if (f.id === 'prod-batch-form') {
+    e.preventDefault();
+    var sku = f.dataset.sku;
+    var batchNo = $('#pb-no') ? $('#pb-no').value.trim() : ('BATCH-' + today());
+    var cases = $('#pb-cases') ? +$('#pb-cases').value : 10;
+    var notes = $('#pb-notes') ? $('#pb-notes').value.trim() : '';
+
+    S.fg.push({
+      id: nid('F', S.fg),
+      kind: 'Production',
+      date: today(),
+      size: sku,
+      qty: cases,
+      to: 'P',
+      from: '',
+      batch: batchNo,
+      note: notes,
+      by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE,
+      at: new Date().toISOString()
+    });
+
+    save();
+    closeModal();
+    toast('Batch ' + batchNo + ' recorded! ' + num(cases) + ' cases credited to Plant stock.');
+    render();
+    return;
+  }
+
+  if (f.id === 'dayclose-handover-form') {
+    e.preventDefault();
+    var tripId = f.dataset.tripId;
+    var trip = (S.trips || []).find(function(t) { return t.id === tripId; });
+    if (!trip) return;
+
+    var supId = $('#ho-supervisor') ? $('#ho-supervisor').value : '';
+    var cashAmt = $('#ho-cash') ? +$('#ho-cash').value : 0;
+    var upiAmt = $('#ho-upi') ? +$('#ho-upi').value : 0;
+    var cansCount = $('#ho-cans') ? +$('#ho-cans').value : 0;
+    var notes = $('#ho-notes') ? $('#ho-notes').value.trim() : '';
+
+    var hoNo = 'CHO-' + today().replace(/-/g, '').slice(2) + '-' + Math.floor(1000 + Math.random() * 9000);
+    var hoRec = {
+      id: nid('CHO', S.cashHandovers),
+      handover_no: hoNo,
+      trip_id: trip.id,
+      driver_employee_id: trip.driver_employee_id,
+      manager_profile_id: supId,
+      gross_cash_amount: cashAmt,
+      trip_expenses_amount: 0,
+      net_cash_amount: cashAmt,
+      upi_amount: upiAmt,
+      empty_cans: cansCount,
+      handed_over_at: new Date().toISOString(),
+      notes: notes
+    };
+
+    S.cashHandovers.push(hoRec);
+    trip.status = 'settled';
+    trip.handoverAt = hoRec.handed_over_at;
+
+    save();
+    showHandoverReceiptModal(hoRec, trip);
+    render();
+    return;
+  }
+});
+
+/* Event Delegation for Dynamic Updates (Inputs & Selects) */
+document.addEventListener('input', function(e) {
+  var t = e.target;
+  if (!t) return;
+  if (t.classList.contains('del-qty') || t.classList.contains('del-rate')) {
+    var f = t.closest('#deliver-stop-form');
+    if (f) {
+      var stop = (S.tripStops || []).find(function(s) { return s.id === f.dataset.stopId; });
+      var cust = stop ? (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) : null;
+      recalcDeliveryModal(cust);
+    }
+  }
+  if (t.id === 'del-paid-amount') {
+    t.dataset.manual = '1';
+  }
+  if (t.id === 'pb-cases') {
+    var form = t.closest('#prod-batch-form');
+    var sku = form ? form.dataset.sku : '20 L Can';
+    var cases = +t.value || 0;
+    var btlEl = document.getElementById('pb-bottles');
+    if (btlEl) btlEl.value = cases * fgPer(sku);
+  }
+});
+
+document.addEventListener('change', function(e) {
+  var t = e.target;
+  if (!t) return;
+  if (t.id === 'del-pay-mode') {
+    var f = t.closest('#deliver-stop-form');
+    if (f) {
+      var stop = (S.tripStops || []).find(function(s) { return s.id === f.dataset.stopId; });
+      var cust = stop ? (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) : null;
+      var paidEl = document.getElementById('del-paid-amount');
+      if (paidEl) delete paidEl.dataset.manual;
+      recalcDeliveryModal(cust);
+    }
+  }
+  if (t.id === 'myroute-trip-select') {
+    window.__SELECTED_ROUTE_TRIP_ID = t.value;
+    render();
+  }
+  if (t.id === 'dayclose-trip-select') {
+    window.__SELECTED_DAYCLOSE_TRIP_ID = t.value;
+    render();
+  }
+  if (t.id === 'rp-date') {
+    RP_STATE.date = t.value;
+    render();
+  }
+  if (t.id === 'rp-vehicle') {
+    RP_STATE.vehicle = t.value;
+    render();
+  }
+  if (t.id === 'rp-driver') {
+    RP_STATE.driver = t.value;
+    render();
+  }
+  if (t.id === 'pp-date') {
+    PP_DATE = t.value;
+    render();
+  }
+});
+
+/* Drag & Drop Reordering for Route Planner */
+var dragSrcIdx = null;
+document.addEventListener('dragstart', function(e) {
+  var item = e.target.closest('.rp-stop-item');
+  if (item) {
+    dragSrcIdx = parseInt(item.dataset.stopIdx, 10);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+});
+document.addEventListener('dragover', function(e) {
+  var item = e.target.closest('.rp-stop-item');
+  if (item && e.dataTransfer) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+});
+document.addEventListener('drop', function(e) {
+  var item = e.target.closest('.rp-stop-item');
+  if (item && dragSrcIdx !== null) {
+    e.preventDefault();
+    var targetIdx = parseInt(item.dataset.stopIdx, 10);
+    if (dragSrcIdx !== targetIdx && RP_STATE.stagedStops) {
+      var moved = RP_STATE.stagedStops.splice(dragSrcIdx, 1)[0];
+      RP_STATE.stagedStops.splice(targetIdx, 0, moved);
+      render();
+    }
+    dragSrcIdx = null;
+  }
+});
+
 PAGES['users'] = userManagementPage;
 window.userManagementPage = userManagementPage;
+PAGES['my-route'] = myRoutePage;
+PAGES['route-planner'] = routePlannerPage;
+PAGES['production-plan'] = productionPlanPage;
+PAGES['day-close'] = dayClosePage;
+window.myRoutePage = myRoutePage;
+window.routePlannerPage = routePlannerPage;
+window.productionPlanPage = productionPlanPage;
+window.dayClosePage = dayClosePage;
+window.captureCustomerLocation = captureCustomerLocation;
+window.RP_STATE = RP_STATE;
+window.num = num;
+
 window.getSession = getSession;
 window.setSession = setSession;
 window.submitLogin = submitLogin;
