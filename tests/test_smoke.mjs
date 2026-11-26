@@ -410,8 +410,13 @@ const requiredRpcs = [
 ];
 requiredRpcs.forEach(rpcName => {
   assert.ok(rpcsSql.includes(`FUNCTION public.${rpcName}`), `RPC ${rpcName} must be defined in 004_security_definer_rpcs.sql`);
+  assert.ok(rpcsSql.includes(`REVOKE EXECUTE ON FUNCTION public.${rpcName}`), `RPC ${rpcName} must revoke execute from PUBLIC, anon`);
   assert.ok(rpcsSql.includes(`GRANT EXECUTE ON FUNCTION public.${rpcName}`), `RPC ${rpcName} must grant execute`);
 });
+
+// Security Definer & search_path checks on 004 RPCs
+assert.strictEqual((rpcsSql.match(/SECURITY DEFINER/g) || []).length, 13, 'All 13 RPCs must be SECURITY DEFINER');
+assert.strictEqual((rpcsSql.match(/SET search_path = public, pg_temp/g) || []).length, 13, 'All 13 RPCs must lock search_path = public, pg_temp');
 
 // Single-transaction deliver_stop constraints & offline sync
 assert.ok(rpcsSql.includes('p_provisional_id text DEFAULT NULL'), 'deliver_stop supports provisional_id');

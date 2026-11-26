@@ -1070,8 +1070,22 @@ END;
 $$;
 
 -- ====================================================================
--- Grant EXECUTE to authenticated and service_role ONLY
+-- Revoke from PUBLIC, anon & Grant EXECUTE to authenticated, service_role ONLY
 -- ====================================================================
+
+REVOKE EXECUTE ON FUNCTION public.record_production(text, text, text, numeric, numeric, text, date, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.transfer_stock(text, text, text, text, numeric, numeric, date, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.create_order(text, text, jsonb, date, text, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.log_order_from_stop(text, text, text, jsonb, date, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.plan_trip(text, text, text, jsonb, date, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.confirm_loading(text, text, numeric, jsonb, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.arrive_at_stop(text, text, text, numeric, numeric) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.deliver_stop(text, text, text, jsonb, numeric, text, int, boolean, text, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.skip_stop(text, text, text, text, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.set_customer_location(text, numeric, numeric, numeric) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.close_trip(text, text, numeric, jsonb, text, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.handover_cash(text, text, numeric, numeric, numeric, text, text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.production_plan(date) FROM PUBLIC, anon;
 
 GRANT EXECUTE ON FUNCTION public.record_production(text, text, text, numeric, numeric, text, date, text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.transfer_stock(text, text, text, text, numeric, numeric, date, text) TO authenticated, service_role;
