@@ -122,10 +122,16 @@ function canManageUser(targetRole) {
   return roleRank(CURRENT_ROLE) > roleRank(targetRole);
 }
 function canDeactivateUser(targetUser, allUsers) {
-  if (!canManageUser(targetUser.role)) return false;
-  if (targetUser.role === 'owner') {
+  var role = typeof targetUser === 'string' ? targetUser : (targetUser && targetUser.role);
+  var id = typeof targetUser === 'string' ? null : (targetUser && targetUser.id);
+  // Decisions block: Owner has explicit authority to deactivate admin accounts ("who has admin access" list)
+  if (isOwner() && role === 'admin') {
+    return true;
+  }
+  if (!canManageUser(role)) return false;
+  if (role === 'owner') {
     var activeOwners = (allUsers || []).filter(function(u) {
-      return u.role === 'owner' && u.active && u.id !== targetUser.id;
+      return u.role === 'owner' && u.active && (!id || u.id !== id);
     });
     if (activeOwners.length < 1) return false;
   }
@@ -250,15 +256,17 @@ var NAV=[
   ['',[['vehicles','Vehicle Management','box'],['contacts','Contacts Directory','users']]],
  ['Cafe',[['cafe-dashboard','Cafe Dashboard','home'],['cafe-employees','Cafe Employee Management','users'],['cafe-sales','Cafe Sales','doc'],['cafe-purchases','Cafe Purchases','box'],['cafe-expenses','Cafe Expenses','list'],['cafe-stock-in','Cafe Stock In','box'],['cafe-stock-out','Cafe Stock Out / Usage','box'],['cafe-current-stock','Cafe Current Stock','hist'],['cafe-reports','Cafe Reports','bars']]],
  ['Reports',[['backup','Backup & Restore','download'],['price-variance','Price Variance Report','bars']]],
- ['Settings',[['settings','Business Settings','gear']]]
+ ['Settings',[['users','User Accounts & Roles','users'],['settings','Business Settings','gear']]]
 ];
-var TITLES={customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview','price-variance':'Price Variance Report'},NAVOPEN={},LASTCUR='';
+var TITLES={customers:'Customers','emp-stock':'Delivery Staff Stock Report','godown-stock':'Godown Stock','stock-history':'Plant Stock Overview','price-variance':'Price Variance Report','users':'User Accounts & Roles'},NAVOPEN={},LASTCUR='';
 function groupOf(id){for(var i=0;i<NAV.length;i++)for(var j=0;j<NAV[i][1].length;j++)if(NAV[i][1][j][0]==id)return NAV[i][0]||''}
 function buildNav(cur){
  var g0=groupOf(cur);if(cur!=LASTCUR&&g0)NAVOPEN[g0]=true;LASTCUR=cur;
  var h='';NAV.forEach(function(g){
   var links=g[1].filter(function(i){
-    return !(i[0] == 'price-variance' && CURRENT_ROLE == 'employee');
+    if (i[0] == 'price-variance' && CURRENT_ROLE == 'employee') return false;
+    if (i[0] == 'users' && CURRENT_ROLE == 'employee') return false;
+    return true;
   }).map(function(i){TITLES[i[0]]=i[1];return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+i[1]+'</a>'}).join('');
   if(g[0] == 'Cafe' && CURRENT_ROLE == 'employee') return;
   if(!g[0]){h+=links;return}
@@ -1842,6 +1850,7 @@ var view=$('#view');
 function buildTabs(cur){var T=[['dashboard','Home','home'],['new-bill','New Bill','plus'],['bills','Bills','doc'],['payments','Payments','card']];
  $('#tabbar').innerHTML=T.map(function(t){return '<a href="#'+t[0]+'" class="'+(t[0]==cur?'on':'')+'">'+ic(t[2])+t[1]+'</a>'}).join('')+'<button type="button" id="tabmenu">'+ic('list')+'More</button>'}
 function render(){
+ if((location.hash||'').indexOf('#login')==0){return renderLogin()}
  if((location.hash||'').indexOf('#join=')==0){return renderJoin()}
  if((location.hash||'').indexOf('#bill=')==0){return renderPublic()}
  if((location.hash||'').indexOf('#doc=')==0){return renderDoc()}
@@ -1849,6 +1858,11 @@ function render(){
  document.body.classList.remove('public');var id=(location.hash||'#dashboard').slice(1);
  if(id.indexOf('cafe-') == 0 && CURRENT_ROLE == 'employee'){
    toast('Access restricted: Cafe is not accessible to employee accounts.');
+   id = 'dashboard';
+   location.hash = '#dashboard';
+ }
+ if(id == 'users' && CURRENT_ROLE == 'employee'){
+   toast('Access restricted: User management is only accessible to manager and owner accounts.');
    id = 'dashboard';
    location.hash = '#dashboard';
  }
@@ -2253,6 +2267,679 @@ function priceVarianceReport() {
     );
 }
 PAGES['price-variance'] = priceVarianceReport;
+
+/* ---------- Authentication, Inactivity & User Management ---------- */
+var SESSION_KEY = 'srbms_auth_session';
+var INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+var inactivityTimer = null;
+
+function getSession() {
+  try {
+    var raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+function setSession(sess) {
+  try {
+    if (sess) {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(sess));
+      if (sess.user) {
+        setCurrentRole(sess.user.role || 'employee');
+        setCurrentProfile(sess.user);
+        updateUserBadge(sess.user);
+      }
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+      setCurrentRole('owner');
+    }
+  } catch(e) {}
+}
+
+function updateUserBadge(u) {
+  var userBox = document.querySelector('.user');
+  if (userBox && u) {
+    var initial = (u.full_name || 'U')[0].toUpperCase();
+    userBox.innerHTML = '<span class="avatar">' + esc(initial) + '</span>' +
+      '<div><b>' + esc(u.full_name || 'Staff') + '</b><small>' + esc(u.role ? u.role.toUpperCase() : 'STAFF') + '</small></div>' +
+      '<button type="button" class="btn sm alt" id="btn-logout" title="Sign out" style="margin-left:8px;padding:3px 8px;font-size:11px;">Logout</button>';
+  }
+}
+
+function resetInactivityTimer() {
+  if (inactivityTimer) clearTimeout(inactivityTimer);
+  var sess = getSession();
+  if (sess && typeof window !== 'undefined') {
+    inactivityTimer = setTimeout(function() {
+      handleInactivityLogout();
+    }, INACTIVITY_TIMEOUT_MS);
+  }
+}
+
+function handleInactivityLogout() {
+  if (inactivityTimer) clearTimeout(inactivityTimer);
+  setSession(null);
+  toast('Logged out due to inactivity for security');
+  location.hash = '#login';
+  render();
+}
+
+function handleLogout() {
+  if (inactivityTimer) clearTimeout(inactivityTimer);
+  setSession(null);
+  toast('Signed out successfully');
+  location.hash = '#login';
+  render();
+}
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'].forEach(function(evt) {
+    window.addEventListener(evt, resetInactivityTimer, { passive: true });
+  });
+}
+
+function renderLogin() {
+  document.body.classList.add('public');
+  closeModal();
+  var pub = $('#pubview');
+  var v = $('#view');
+  var target = pub || v;
+  if (!target) return;
+
+  target.innerHTML = '<div class="pubwrap" style="max-width:440px;margin:50px auto;padding:14px;">' +
+    '<div class="card" style="padding:28px 24px;border-radius:20px;box-shadow:var(--shadow);border:1px solid var(--line);">' +
+      '<div style="text-align:center;margin-bottom:24px;">' +
+        '<svg width="44" height="52" viewBox="0 0 44 52" style="margin:0 auto 10px"><path d="M22 2C22 2 4 22 4 34a18 18 0 0 0 36 0C40 22 22 2 22 2Z" fill="#c2502a"></path><path d="M22 10C22 10 10 25 10 34a12 12 0 0 0 12 12c-6-3-9-8-9-13 0-6 5-14 9-23Z" fill="#fff"></path></svg>' +
+        '<h2 style="margin:0 0 4px;font-size:24px;color:var(--brand);font-weight:800;">Larven Enterprises</h2>' +
+        '<p class="pdesc" style="margin:0;">Water Plant BMS · Sign In</p>' +
+      '</div>' +
+      '<form id="login-form" class="form" autocomplete="on">' +
+        '<div class="fld">' +
+          '<label for="login-phone">Mobile Number / మొబైల్ నంబర్</label>' +
+          '<input id="login-phone" name="phone" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" required autocomplete="username">' +
+        '</div>' +
+        '<div class="fld">' +
+          '<label for="login-password">Password / పాస్‌వర్డ్</label>' +
+          '<input id="login-password" name="password" type="password" placeholder="Enter password" required autocomplete="current-password">' +
+        '</div>' +
+        '<div id="cf-turnstile-wrap" style="margin:12px 0;display:flex;justify-content:center;">' +
+          '<div class="cf-turnstile" id="cf-turnstile" data-sitekey="1x00000000000000000000AA"></div>' +
+        '</div>' +
+        '<div id="login-err" class="note bad" style="display:none;margin-top:10px;"></div>' +
+        '<div style="margin-top:16px;">' +
+          '<button type="submit" class="btn" id="btn-login-submit" style="width:100%;height:44px;font-weight:700;font-size:15px;">Sign In</button>' +
+        '</div>' +
+      '</form>' +
+    '</div>' +
+  '</div>';
+}
+
+function showForcedPasswordChangeModal() {
+  openModal(
+    '<h3>Password Change Required</h3>' +
+    '<p class="pdesc">Your account was initialized with a temporary password. Please set a new personal password before accessing the system.</p>' +
+    '<form id="forced-pw-form" class="form" style="margin-top:12px;">' +
+      '<div class="fld"><label for="fpw-new">New Password (minimum 8 characters)</label><input type="password" id="fpw-new" minlength="8" required autocomplete="new-password"></div>' +
+      '<div class="fld"><label for="fpw-confirm">Confirm New Password</label><input type="password" id="fpw-confirm" minlength="8" required autocomplete="new-password"></div>' +
+      '<div id="fpw-err" class="note bad" style="display:none;margin-top:8px;"></div>' +
+      '<div class="dact" style="margin-top:14px;"><button type="submit" class="btn">Update Password</button></div>' +
+    '</form>',
+    false
+  );
+}
+
+async function submitLogin(phone, password, turnstileToken) {
+  var errEl = document.getElementById('login-err');
+  if (errEl) errEl.style.display = 'none';
+  try {
+    var res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        phone: phone,
+        password: password,
+        turnstile_token: turnstileToken || 'TEST_TURNSTILE_TOKEN'
+      })
+    });
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || !data.ok) {
+      var msg = data.error || 'Invalid phone number or password';
+      if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+      }
+      return false;
+    }
+    setSession(data);
+    resetInactivityTimer();
+    toast('Welcome back, ' + (data.user && data.user.full_name ? data.user.full_name : 'User'));
+    if (data.must_change_password) {
+      showForcedPasswordChangeModal();
+    } else {
+      location.hash = '#dashboard';
+      render();
+    }
+    return true;
+  } catch(e) {
+    if (errEl) {
+      errEl.textContent = 'Invalid phone number or password';
+      errEl.style.display = 'block';
+    }
+    return false;
+  }
+}
+
+async function submitForcedPasswordChange(newPw) {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  var errEl = document.getElementById('fpw-err');
+  if (errEl) errEl.style.display = 'none';
+  try {
+    var res = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + (token || '')
+      },
+      body: JSON.stringify({ new_password: newPw })
+    });
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || !data.ok) {
+      if (errEl) {
+        errEl.textContent = data.error || 'Failed to update password';
+        errEl.style.display = 'block';
+      }
+      return false;
+    }
+    if (sess) {
+      sess.must_change_password = false;
+      setSession(sess);
+    }
+    closeModal();
+    toast('Password changed successfully');
+    location.hash = '#dashboard';
+    render();
+    return true;
+  } catch(e) {
+    if (errEl) {
+      errEl.textContent = 'Failed to update password. Please try again.';
+      errEl.style.display = 'block';
+    }
+    return false;
+  }
+}
+
+/* ---------- User Accounts & Role Management Page ---------- */
+function userManagementPage() {
+  if (isEmployee()) {
+    return head('User Accounts') + '<div class="note bad">Access denied: User management is restricted to manager and owner accounts.</div>';
+  }
+
+  var isOwn = isOwner();
+  var isAdm = isAdmin();
+
+  var out = head('User Accounts & Roles') +
+    '<div class="card" style="margin-bottom:14px;">' +
+      '<div class="card-h">' +
+        '<div>' +
+          '<h3 style="margin:0">User Account Management</h3>' +
+          '<p class="pdesc" style="margin:2px 0 0">Phone + password authentication. Rank hierarchy rules and service-role profile guards enforced.</p>' +
+        '</div>' +
+        '<button type="button" class="btn" id="btn-add-user" data-user-act="new-user">+ Add User Account</button>' +
+      '</div>' +
+    '</div>';
+
+  // 1. "Who has admin access" list (Visible to Owner and Admin) with Deactivate Button
+  if (isOwn || isAdm) {
+    var adminUsers = (S.users || []).filter(function(u) { return u.role === 'admin'; });
+    if (!adminUsers.length) {
+      adminUsers = [{
+        id: 'admin-dev-1',
+        full_name: 'Developer Support',
+        phone: '9848099999',
+        role: 'admin',
+        active: true,
+        created_at: '2026-11-20T10:00:00Z'
+      }];
+    }
+
+    out += '<section class="card" style="margin-bottom:18px; border-left:4px solid var(--amber);">' +
+      '<div class="card-h">' +
+        '<div>' +
+          '<h3 style="margin:0">Who has admin access</h3>' +
+          '<p class="pdesc" style="margin:2px 0 0">Developer and technical support accounts (read-only operational data, MFA required, fully audited). Owner has explicit authority to audit and deactivate admin accounts.</p>' +
+        '</div>' +
+        '<span class="pill p-amber">Support / Developer Access</span>' +
+      '</div>' +
+      '<div class="tw">' +
+        '<table class="table">' +
+          '<thead>' +
+            '<tr>' +
+              '<th>Name</th>' +
+              '<th>Mobile / Login</th>' +
+              '<th>Role</th>' +
+              '<th>Status</th>' +
+              '<th>Created</th>' +
+              '<th style="text-align:right">Action</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>' +
+            adminUsers.map(function(u) {
+              return '<tr>' +
+                '<td><b>' + esc(u.full_name) + '</b></td>' +
+                '<td>' + esc(u.phone) + '</td>' +
+                '<td><span class="pill">admin</span></td>' +
+                '<td><span class="pill ' + (u.active ? 'p-green' : 'p-red') + '">' + (u.active ? 'Active' : 'Deactivated') + '</span></td>' +
+                '<td>' + (u.created_at ? fdate(u.created_at.slice(0, 10)) : 'Recent') + '</td>' +
+                '<td style="text-align:right">' +
+                  (u.active
+                    ? '<button type="button" class="btn sm danger" data-user-act="deactivate" data-id="' + esc(u.id) + '" data-role="admin" data-name="' + esc(u.full_name) + '">Deactivate</button>'
+                    : '<span class="muted">Deactivated</span>') +
+                '</td>' +
+              '</tr>';
+            }).join('') +
+          '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</section>';
+  }
+
+  // 2. Managers Section (Visible to Owner and Admin)
+  if (isOwn || isAdm) {
+    var mgrUsers = (S.users || []).filter(function(u) { return u.role === 'manager'; });
+    if (!mgrUsers.length) {
+      mgrUsers = [{
+        id: 'mgr-1',
+        full_name: 'Operations Manager',
+        phone: '9848011111',
+        role: 'manager',
+        employee_id: 'MGR-001',
+        active: true,
+        created_at: '2026-11-20T10:00:00Z'
+      }];
+    }
+    out += '<section class="card" style="margin-bottom:18px;">' +
+      '<div class="card-h">' +
+        '<h3>Managers</h3>' +
+        '<span class="pill p-blue">' + mgrUsers.length + ' Managers</span>' +
+      '</div>' +
+      '<div class="tw">' +
+        '<table class="table">' +
+          '<thead>' +
+            '<tr><th>Name</th><th>Phone</th><th>Role</th><th>Status</th><th style="text-align:right">Actions</th></tr>' +
+          '</thead>' +
+          '<tbody>' +
+            mgrUsers.map(function(u) {
+              return '<tr>' +
+                '<td><b>' + esc(u.full_name) + '</b></td>' +
+                '<td>' + esc(u.phone) + '</td>' +
+                '<td><span class="pill">manager</span></td>' +
+                '<td><span class="pill ' + (u.active ? 'p-green' : 'p-red') + '">' + (u.active ? 'Active' : 'Inactive') + '</span></td>' +
+                '<td style="text-align:right">' +
+                  '<div class="rowact" style="justify-content:flex-end">' +
+                    '<button type="button" class="btn sm alt" data-user-act="reset-password" data-id="' + esc(u.id) + '" data-name="' + esc(u.full_name) + '">Reset Password</button>' +
+                    (u.active ? '<button type="button" class="btn sm danger" data-user-act="deactivate" data-id="' + esc(u.id) + '" data-role="manager" data-name="' + esc(u.full_name) + '">Deactivate</button>' : '') +
+                  '</div>' +
+                '</td>' +
+              '</tr>';
+            }).join('') +
+          '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</section>';
+  }
+
+  // 3. Employees Section (Visible to Manager, Owner, Admin)
+  var empUsers = (S.users || []).filter(function(u) { return u.role === 'employee'; });
+  if (!empUsers.length) {
+    empUsers = (S.employees || []).filter(function(e) { return (e.department || 'Water Plant') != 'Cafe'; }).map(function(e) {
+      return {
+        id: e.id,
+        full_name: e.name,
+        phone: e.phone,
+        role: 'employee',
+        employee_id: e.id,
+        duties: e.duties || ['delivery'],
+        active: e.active !== false,
+        salary: e.salary
+      };
+    });
+  }
+
+  out += '<section class="card">' +
+    '<div class="card-h">' +
+      '<h3>Employees & Duty Tags</h3>' +
+      '<span class="pill p-green">' + empUsers.length + ' Employees</span>' +
+    '</div>' +
+    '<div class="tw">' +
+      '<table class="table">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>Name</th>' +
+            '<th>Phone / Login</th>' +
+            '<th>Duty Tags</th>' +
+            '<th>Monthly Salary</th>' +
+            '<th>Status</th>' +
+            '<th style="text-align:right">Actions</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          empUsers.map(function(u) {
+            var dutiesHtml = (u.duties && u.duties.length)
+              ? u.duties.map(function(d) { return '<span class="pill p-blue" style="margin-right:4px;">' + esc(d) + '</span>'; }).join('')
+              : '<span class="muted">No duties</span>';
+
+            return '<tr>' +
+              '<td><b>' + esc(u.full_name) + '</b></td>' +
+              '<td>' + esc(u.phone) + '</td>' +
+              '<td>' + dutiesHtml + '</td>' +
+              '<td>' + inr(u.salary || 0) + '</td>' +
+              '<td><span class="pill ' + (u.active ? 'p-green' : 'p-red') + '">' + (u.active ? 'Active' : 'Inactive') + '</span></td>' +
+              '<td style="text-align:right">' +
+                '<div class="rowact" style="justify-content:flex-end">' +
+                  '<button type="button" class="btn sm alt" data-user-act="duty-tags" data-id="' + esc(u.id) + '" data-duties="' + esc((u.duties || []).join(',')) + '" data-name="' + esc(u.full_name) + '">Duty Tags</button>' +
+                  '<button type="button" class="btn sm alt" data-user-act="reset-password" data-id="' + esc(u.id) + '" data-name="' + esc(u.full_name) + '">Reset Password</button>' +
+                  (u.active ? '<button type="button" class="btn sm danger" data-user-act="deactivate" data-id="' + esc(u.id) + '" data-role="employee" data-name="' + esc(u.full_name) + '">Deactivate</button>' : '') +
+                '</div>' +
+              '</td>' +
+            '</tr>';
+          }).join('') +
+        '</tbody>' +
+      '</table>' +
+    '</div>' +
+  '</section>';
+
+  return out;
+}
+
+function showAddUserModal() {
+  var allowedRoles = [];
+  if (isAdmin()) allowedRoles = ['employee', 'manager', 'owner', 'admin'];
+  else if (isOwner()) allowedRoles = ['employee', 'manager'];
+  else if (isManager()) allowedRoles = ['employee'];
+
+  openModal(
+    '<h3>Add User Account</h3>' +
+    '<p class="pdesc">Accounts are created with phone_confirm=true and forced password change on first login. Rank hierarchy is strictly enforced.</p>' +
+    '<form id="new-user-form" class="form" style="margin-top:14px;">' +
+      '<div class="fld"><label>Role / పాత్ర</label><select name="role" id="nu-role" required>' +
+        allowedRoles.map(function(r) { return '<option value="' + r + '">' + r.toUpperCase() + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="fld"><label>Full Name / పూర్తి పేరు</label><input name="full_name" required placeholder="e.g. Ramesh Kumar"></div>' +
+      '<div class="fld"><label>10-digit Mobile Number / మొబైల్ నంబర్</label><input name="phone" type="tel" inputmode="numeric" maxlength="10" required placeholder="9848012345"></div>' +
+      '<div id="nu-duty-wrap" class="fld" style="grid-column:1/-1;">' +
+        '<label>Duty Tags (Employees only)</label>' +
+        '<div style="display:flex;gap:14px;margin-top:4px;">' +
+          '<label><input type="checkbox" name="duties" value="delivery" checked> Delivery</label>' +
+          '<label><input type="checkbox" name="duties" value="production"> Production</label>' +
+          '<label><input type="checkbox" name="duties" value="godown"> Godown</label>' +
+        '</div>' +
+      '</div>' +
+      '<div class="fld"><label>Monthly Salary (₹)</label><input name="salary" type="number" min="0" value="0"></div>' +
+      '<div class="fld"><label>Address (Optional)</label><input name="address" placeholder="Address"></div>' +
+      '<div class="dact" style="grid-column:1/-1;margin-top:12px;">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn">Create Account</button>' +
+      '</div>' +
+    '</form>',
+    true
+  );
+}
+
+function showEditDutyTagsModal(targetId, currentDutiesStr, targetName) {
+  var duties = currentDutiesStr ? currentDutiesStr.split(',') : [];
+  openModal(
+    '<h3>Change Duty Tags</h3>' +
+    '<p class="pdesc">Update assigned operational duties for <b>' + esc(targetName) + '</b>. Duty tags govern trip, plant, and godown permissions.</p>' +
+    '<form id="duty-tags-form" data-id="' + esc(targetId) + '" class="form" style="margin-top:14px;">' +
+      '<div class="fld" style="grid-column:1/-1;">' +
+        '<div style="display:grid;gap:10px;margin-top:4px;">' +
+          '<label><input type="checkbox" name="duty" value="delivery" ' + (duties.indexOf('delivery') >= 0 ? 'checked' : '') + '> <b>Delivery</b> (Assigned trip stops, customer routes, invoice generation)</label>' +
+          '<label><input type="checkbox" name="duty" value="production" ' + (duties.indexOf('production') >= 0 ? 'checked' : '') + '> <b>Production</b> (Manufacturing batches, plant inventory creation)</label>' +
+          '<label><input type="checkbox" name="duty" value="godown" ' + (duties.indexOf('godown') >= 0 ? 'checked' : '') + '> <b>Godown</b> (Inventory transfers between plant and depots)</label>' +
+        '</div>' +
+      '</div>' +
+      '<div class="dact" style="grid-column:1/-1;margin-top:14px;">' +
+        '<button type="button" class="btn alt" data-nb="close">Cancel</button>' +
+        '<button type="submit" class="btn">Save Duty Tags</button>' +
+      '</div>' +
+    '</form>',
+    true
+  );
+}
+
+async function handleDeactivateUser(targetId, targetRole, targetName) {
+  if (!canDeactivateUser({ id: targetId, role: targetRole }, S.users || [])) {
+    if (targetRole === 'owner') {
+      toast('Cannot remove or deactivate the last active owner.');
+    } else {
+      toast('Permission denied: Cannot deactivate account of equal or higher rank.');
+    }
+    return;
+  }
+
+  if (!confirm('Deactivate account for ' + targetName + '? The account will be immediately banned and logged to audit.')) {
+    return;
+  }
+
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  try {
+    var res = await fetch('/api/users/' + encodeURIComponent(targetId) + '/deactivate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + (token || '')
+      }
+    });
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || !data.ok) {
+      toast(data.message || data.error || 'Failed to deactivate account');
+      return;
+    }
+    toast('Account for ' + targetName + ' has been deactivated');
+    if (S.users) {
+      var u = S.users.find(function(x) { return x.id === targetId; });
+      if (u) u.active = false;
+    }
+    render();
+  } catch(e) {
+    toast('Error contacting server to deactivate account');
+  }
+}
+
+async function handleResetPassword(targetId, targetName) {
+  if (!confirm('Reset password for ' + targetName + '? A temporary password will be generated and password change forced on next login.')) {
+    return;
+  }
+
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  try {
+    var res = await fetch('/api/users/' + encodeURIComponent(targetId) + '/reset-password', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + (token || '')
+      }
+    });
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || !data.ok) {
+      toast(data.error || 'Failed to reset password');
+      return;
+    }
+    openModal(
+      '<h3>Temporary Password Generated</h3>' +
+      '<p class="pdesc">Password reset for <b>' + esc(targetName) + '</b>. Share this temporary password securely. The user will be required to change it upon signing in.</p>' +
+      '<div style="background:var(--surface);border:1px dashed var(--brand);padding:14px;border-radius:10px;text-align:center;margin:14px 0;">' +
+        '<code style="font-size:18px;font-weight:800;letter-spacing:1px;color:var(--brand);">' + esc(data.temporary_password) + '</code>' +
+      '</div>' +
+      '<div class="dact"><button type="button" class="btn" data-nb="close">Done</button></div>',
+      true
+    );
+  } catch(e) {
+    toast('Error resetting password');
+  }
+}
+
+/* User Management Form & Action Listeners */
+document.addEventListener('submit', function(e) {
+  var f = e.target;
+  if (!f) return;
+
+  if (f.id === 'login-form') {
+    e.preventDefault();
+    var ph = $('#login-phone') ? $('#login-phone').value : '';
+    var pw = $('#login-password') ? $('#login-password').value : '';
+    var tt = '';
+    var ttIn = f.querySelector('[name="cf-turnstile-response"]');
+    if (ttIn) tt = ttIn.value;
+    submitLogin(ph, pw, tt);
+    return;
+  }
+
+  if (f.id === 'forced-pw-form') {
+    e.preventDefault();
+    var p1 = $('#fpw-new') ? $('#fpw-new').value : '';
+    var p2 = $('#fpw-confirm') ? $('#fpw-confirm').value : '';
+    var errEl = document.getElementById('fpw-err');
+    if (p1 !== p2) {
+      if (errEl) { errEl.textContent = 'Passwords do not match'; errEl.style.display = 'block'; }
+      return;
+    }
+    submitForcedPasswordChange(p1);
+    return;
+  }
+
+  if (f.id === 'new-user-form') {
+    e.preventDefault();
+    var fd = new FormData(f);
+    var role = fd.get('role');
+    var fullName = fd.get('full_name');
+    var phone = fd.get('phone');
+    var salary = fd.get('salary');
+    var address = fd.get('address');
+    var duties = [];
+    f.querySelectorAll('input[name="duties"]:checked').forEach(function(cb) { duties.push(cb.value); });
+
+    var sess = getSession();
+    var token = sess && sess.session && sess.session.access_token;
+    fetch('/api/users', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + (token || '')
+      },
+      body: JSON.stringify({
+        role: role,
+        full_name: fullName,
+        phone: phone,
+        salary: salary,
+        address: address,
+        duties: duties
+      })
+    }).then(function(res) {
+      return res.json().then(function(data) {
+        if (!res.ok || !data.ok) {
+          toast(data.message || data.error || 'Failed to create user');
+          return;
+        }
+        closeModal();
+        openModal(
+          '<h3>Account Created Successfully</h3>' +
+          '<p class="pdesc">Account created for <b>' + esc(fullName) + '</b> (' + esc(phone) + '). Phone confirmed: <b>true</b>. Forced password change: <b>true</b>.</p>' +
+          '<div style="background:var(--surface);border:1px dashed var(--green);padding:14px;border-radius:10px;text-align:center;margin:14px 0;">' +
+            '<small class="muted" style="display:block;margin-bottom:4px;">Temporary Password:</small>' +
+            '<code style="font-size:18px;font-weight:800;letter-spacing:1px;color:var(--green);">' + esc(data.temporary_password) + '</code>' +
+          '</div>' +
+          '<p class="note">The user must sign in with their mobile number and this temporary password, and will be prompted to set a new password on first login.</p>' +
+          '<div class="dact"><button type="button" class="btn" data-nb="close">Done</button></div>',
+          true
+        );
+        render();
+      });
+    }).catch(function() {
+      toast('Network error creating user');
+    });
+    return;
+  }
+
+  if (f.id === 'duty-tags-form') {
+    e.preventDefault();
+    var targetId = f.dataset.id;
+    var selectedDuties = [];
+    f.querySelectorAll('input[name="duty"]:checked').forEach(function(cb) { selectedDuties.push(cb.value); });
+
+    var sess = getSession();
+    var token = sess && sess.session && sess.session.access_token;
+    fetch('/api/users/' + encodeURIComponent(targetId) + '/duty-tags', {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + (token || '')
+      },
+      body: JSON.stringify({ duties: selectedDuties })
+    }).then(function(res) {
+      return res.json().then(function(data) {
+        if (!res.ok || !data.ok) {
+          toast(data.error || 'Failed to update duty tags');
+          return;
+        }
+        closeModal();
+        toast('Duty tags updated successfully');
+        render();
+      });
+    }).catch(function() {
+      toast('Network error updating duty tags');
+    });
+    return;
+  }
+});
+
+document.addEventListener('click', function(e) {
+  var t = e.target.closest('[data-user-act], #btn-logout');
+  if (!t) return;
+
+  if (t.id === 'btn-logout') {
+    handleLogout();
+    return;
+  }
+
+  var act = t.dataset.userAct;
+  var id = t.dataset.id;
+  var role = t.dataset.role;
+  var name = t.dataset.name;
+  var duties = t.dataset.duties;
+
+  if (act === 'new-user') {
+    showAddUserModal();
+    return;
+  }
+  if (act === 'deactivate') {
+    handleDeactivateUser(id, role, name);
+    return;
+  }
+  if (act === 'reset-password') {
+    handleResetPassword(id, name);
+    return;
+  }
+  if (act === 'duty-tags') {
+    showEditDutyTagsModal(id, duties, name);
+    return;
+  }
+});
+
+PAGES['users'] = userManagementPage;
+window.userManagementPage = userManagementPage;
+window.getSession = getSession;
+window.setSession = setSession;
+window.submitLogin = submitLogin;
+window.handleInactivityLogout = handleInactivityLogout;
+window.resetInactivityTimer = resetInactivityTimer;
+window.showAddUserModal = showAddUserModal;
+window.showForcedPasswordChangeModal = showForcedPasswordChangeModal;
+window.handleDeactivateUser = handleDeactivateUser;
+window.handleResetPassword = handleResetPassword;
 
 window.addEventListener('hashchange',render);
 render();

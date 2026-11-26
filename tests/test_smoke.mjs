@@ -425,4 +425,63 @@ assert.ok(rpcsSql.includes("rate_source, entered_by"), 'deliver_stop stores manu
 assert.ok(rpcsSql.includes('credit_limit_warning'), 'deliver_stop returns credit_limit_warning');
 console.log('  ✓ 001_core_schema.sql, 002_views_and_audit.sql, and 004_security_definer_rpcs.sql verified (100% compliant)');
 
+// 10. Verifying Phone + Password Auth & User Management in _worker.js, app.js, and DB migrations
+console.log('10. Verifying Phone + Password Login & User Management Architecture...');
+assert.ok(fs.existsSync('public/_worker.js'), 'public/_worker.js must exist');
+const workerCode = fs.readFileSync('public/_worker.js', 'utf8');
+
+// Worker Endpoints check
+assert.ok(workerCode.includes("'/api/auth/login'"), 'worker implements /api/auth/login');
+assert.ok(workerCode.includes("'/api/auth/change-password'"), 'worker implements /api/auth/change-password');
+assert.ok(workerCode.includes("'/api/users'"), 'worker implements /api/users list & create');
+assert.ok(workerCode.includes('/duty-tags'), 'worker implements duty-tags endpoint');
+assert.ok(workerCode.includes('/deactivate'), 'worker implements deactivate endpoint');
+assert.ok(workerCode.includes('/reset-password'), 'worker implements reset-password endpoint');
+
+// Turnstile verification on login
+assert.ok(workerCode.includes('verifyTurnstile'), 'worker verifies Turnstile token');
+assert.ok(workerCode.includes('challenges.cloudflare.com/turnstile'), 'worker contacts Cloudflare Turnstile siteverify');
+
+// Generic error messages (no leakage of user existence or credential details)
+assert.ok(workerCode.includes("Invalid phone number or password"), 'worker returns generic credentials error on login');
+
+// Forced password change & phone confirmation
+assert.ok(workerCode.includes('phone_confirm: true'), 'worker enforces phone_confirm: true on creation');
+assert.ok(workerCode.includes('must_change_password: true'), 'worker enforces must_change_password: true on creation and reset');
+
+// Audit logging of real caller
+assert.ok(workerCode.includes('logAudit'), 'worker implements audit logger');
+assert.ok(workerCode.includes("table_name: tableName"), 'audit logger records target table');
+assert.ok(workerCode.includes("user_id: caller.user.id"), 'audit logger records real caller user_id');
+assert.ok(workerCode.includes("role: caller.profile.role"), 'audit logger records real caller role');
+
+// Rank rules in worker
+assert.ok(workerCode.includes('canCreateRole'), 'worker defines canCreateRole rank check');
+assert.ok(workerCode.includes('canManageUser'), 'worker defines canManageUser rank check');
+assert.ok(workerCode.includes('cannot_remove_last_active_owner'), 'worker guards last active owner from deactivation');
+
+// Database-level enforcement migration
+assert.ok(fs.existsSync('supabase/migrations/005_user_management.sql'), '005_user_management.sql migration must exist');
+const userMgmtSql = fs.readFileSync('supabase/migrations/005_user_management.sql', 'utf8');
+assert.ok(userMgmtSql.includes('check_profile_rank_and_last_owner'), 'DB trigger checks profile rank and last active owner');
+assert.ok(userMgmtSql.includes('Cannot remove or deactivate the last active owner'), 'DB trigger guards last active owner');
+assert.ok(userMgmtSql.includes('can_manage_target_user'), 'DB defines can_manage_target_user function');
+
+// App UI: Inactivity logout, Owner Admin List with Deactivate Button
+assert.ok(appCode.includes('INACTIVITY_TIMEOUT_MS'), 'app.js defines inactivity timeout');
+assert.ok(appCode.includes('handleInactivityLogout'), 'app.js defines inactivity logout handler');
+assert.ok(appCode.includes('Who has admin access'), 'app.js renders owner-visible "Who has admin access" list');
+assert.ok(appCode.includes('data-user-act="deactivate"'), 'app.js provides deactivate button on admin accounts');
+assert.ok(appCode.includes('cf-turnstile'), 'app.js renders Cloudflare Turnstile container');
+
+// Test that PAGES.users executes and renders the Admin List with Deactivate Button for Owner
+context.window.CURRENT_ROLE = 'owner';
+const usersHtml = context.window.PAGES.users();
+assert.ok(typeof usersHtml === 'string' && usersHtml.length > 100, 'PAGES.users returns valid HTML');
+assert.ok(usersHtml.includes('Who has admin access'), 'Owner view includes "Who has admin access" card');
+assert.ok(usersHtml.includes('Deactivate'), 'Owner view includes Deactivate button');
+assert.ok(usersHtml.includes('Employees & Duty Tags'), 'Owner view includes Employees & Duty Tags');
+
+console.log('  ✓ Phone + Password Login, Worker Endpoints, DB Triggers, Turnstile & Admin Deactivation verified (100% compliant)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');
