@@ -340,13 +340,14 @@ console.log('  ✓ public/index.html is clean, standalone, and references local 
 
 // 8. Verifying 003_roles_and_rls.sql migration
 console.log('8. Verifying 003_roles_and_rls.sql migration (Roles, RLS, Helpers & Verification Queries)...');
+const coreSql = fs.readFileSync('supabase/migrations/001_core_schema.sql', 'utf8');
 const rlsSql = fs.readFileSync('supabase/migrations/003_roles_and_rls.sql', 'utf8');
 
-// Roles and schema checks
-assert.ok(rlsSql.includes("role IN ('admin', 'owner', 'manager', 'employee')"), "Migration enforces role IN ('admin', 'owner', 'manager', 'employee')");
-assert.ok(rlsSql.includes("profiles_phone_key UNIQUE (phone)"), "Migration enforces UNIQUE (phone) on profiles");
-assert.ok(rlsSql.includes("duties text[] DEFAULT '{}'"), "Migration adds duties text[] to employees");
-assert.ok(rlsSql.includes("created_by uuid REFERENCES public.profiles(id)"), "Migration adds created_by to profiles");
+// Roles and schema checks in core schema
+assert.ok(coreSql.includes("role IN ('admin', 'owner', 'manager', 'employee')"), "Migration enforces role IN ('admin', 'owner', 'manager', 'employee')");
+assert.ok(coreSql.includes("phone text UNIQUE"), "Migration enforces UNIQUE phone on profiles");
+assert.ok(coreSql.includes("duties text[] NOT NULL DEFAULT '{}'"), "Migration adds duties text[] to employees");
+assert.ok(coreSql.includes("created_by uuid REFERENCES public.profiles(id)"), "Migration adds created_by to profiles");
 
 // Security Definer helpers
 assert.ok(rlsSql.includes("FUNCTION public.app_role()"), "Migration defines app_role() helper");
@@ -359,7 +360,7 @@ assert.ok(rlsSql.includes("FUNCTION public.is_customer_on_my_open_trip"), "Migra
 assert.ok(rlsSql.includes("check_profile_service_role_only"), "Migration enforces profile changes only via worker service role");
 
 // Financial and stock ledger immutability (NO DELETE policies)
-const ledgerTables = ['bills', 'payments', 'stock', 'fg', 'expenses', 'advances', 'payslips', 'price_list'];
+const ledgerTables = ['bills', 'bill_items', 'payments', 'fg_movements', 'expenses', 'advances', 'customer_prices', 'price_list'];
 ledgerTables.forEach(t => {
   assert.ok(!rlsSql.includes(`"${t}_delete"`), `Financial/stock ledger ${t} must NOT have a DELETE policy`);
 });
@@ -373,5 +374,50 @@ assert.ok(rlsSql.includes("trim(qual) = 'true'"), "Migration contains verificati
 assert.ok(rlsSql.includes("grantee IN ('anon', 'public')"), "Migration contains verification query for anon-executable functions");
 assert.ok(rlsSql.includes("ROLE × TABLE PERMISSIONS MATRIX"), "Migration contains role × table permissions matrix");
 console.log('  ✓ supabase/migrations/003_roles_and_rls.sql verified (100% compliant with Decisions block)');
+
+// 9. Verifying 001_core_schema.sql, 002_views_and_audit.sql, and 004_security_definer_rpcs.sql
+console.log('9. Verifying complete typed schema migrations (001_core, 002_views, 004_rpcs)...');
+const viewsSql = fs.readFileSync('supabase/migrations/002_views_and_audit.sql', 'utf8');
+const rpcsSql = fs.readFileSync('supabase/migrations/004_security_definer_rpcs.sql', 'utf8');
+
+// Core schema checks
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.customers'), 'customers table exists');
+assert.ok(coreSql.includes('accuracy_m numeric(6,2)'), 'customers has accuracy_m');
+assert.ok(coreSql.includes('credit_limit numeric(12,2)'), 'customers has credit_limit');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.customer_prices'), 'customer_prices table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.orders'), 'orders table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.order_items'), 'order_items table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.prospects'), 'prospects table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.locations'), 'locations table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.production_runs'), 'production_runs table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.fg_movements'), 'fg_movements table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.trips'), 'trips table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.trip_stops'), 'trip_stops table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.trip_stop_items'), 'trip_stop_items table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.deliveries'), 'deliveries table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.cash_handovers'), 'cash_handovers table exists');
+assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.idempotency_keys'), 'idempotency_keys table exists');
+
+// Views and audit checks
+assert.ok(viewsSql.includes('CREATE OR REPLACE VIEW public.v_fg_balances'), 'v_fg_balances view exists');
+assert.ok(viewsSql.includes('trg_audit_logger'), 'trg_audit_logger exists');
+
+// All 13 RPCs check
+const requiredRpcs = [
+  'record_production', 'transfer_stock', 'create_order', 'log_order_from_stop',
+  'plan_trip', 'confirm_loading', 'arrive_at_stop', 'deliver_stop',
+  'skip_stop', 'set_customer_location', 'close_trip', 'handover_cash', 'production_plan'
+];
+requiredRpcs.forEach(rpcName => {
+  assert.ok(rpcsSql.includes(`FUNCTION public.${rpcName}`), `RPC ${rpcName} must be defined in 004_security_definer_rpcs.sql`);
+  assert.ok(rpcsSql.includes(`GRANT EXECUTE ON FUNCTION public.${rpcName}`), `RPC ${rpcName} must grant execute`);
+});
+
+// Single-transaction deliver_stop constraints & offline sync
+assert.ok(rpcsSql.includes('p_provisional_id text DEFAULT NULL'), 'deliver_stop supports provisional_id');
+assert.ok(rpcsSql.includes('p_offline boolean DEFAULT false'), 'deliver_stop supports offline mode');
+assert.ok(rpcsSql.includes("rate_source, entered_by"), 'deliver_stop stores manual rate source and entered_by');
+assert.ok(rpcsSql.includes('credit_limit_warning'), 'deliver_stop returns credit_limit_warning');
+console.log('  ✓ 001_core_schema.sql, 002_views_and_audit.sql, and 004_security_definer_rpcs.sql verified (100% compliant)');
 
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

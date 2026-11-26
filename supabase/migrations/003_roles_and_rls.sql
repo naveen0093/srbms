@@ -1,84 +1,22 @@
+-- ====================================================================
+-- SR Industries BMS - Roles and Row Level Security (RLS) Policies
 -- Migration: 003_roles_and_rls.sql
--- Roles and Row Level Security (RLS) Policies for Decisions Block
 -- Roles: admin, owner, manager, employee
+-- ====================================================================
 
 BEGIN;
 
 -- ====================================================================
--- SECTION 1: Schema Updates on Profiles and Employees
+-- SECTION 1: Security Definer Helper Functions
 -- ====================================================================
 
--- 1. Profiles Table: Add phone (unique), created_by, and enforce role check
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS phone text;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'profiles_phone_key'
-  ) THEN
-    ALTER TABLE public.profiles ADD CONSTRAINT profiles_phone_key UNIQUE (phone);
-  END IF;
-END $$;
-
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL;
-
-ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
-ALTER TABLE public.profiles ADD CONSTRAINT profiles_role_check
-  CHECK (role IN ('admin', 'owner', 'manager', 'employee'));
-
--- 2. Employees Table: Add duties text[]
-ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS duties text[] DEFAULT '{}';
-
--- 3. Ensure employee_id column exists on vehicle_trips and attendance for fast indexing
-ALTER TABLE public.vehicle_trips ADD COLUMN IF NOT EXISTS employee_id text;
-ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS employee_id text;
-
--- ====================================================================
--- SECTION 2: Ensure Audit Log & Employee Identities Tables Exist
--- ====================================================================
-
-CREATE TABLE IF NOT EXISTS public.audit_log (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  at timestamptz NOT NULL DEFAULT now(),
-  user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  role text NULL,
-  table_name text NOT NULL,
-  row_id text NOT NULL,
-  action text NOT NULL,
-  old jsonb NULL,
-  new jsonb NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_log_at ON public.audit_log (at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_log_table ON public.audit_log (table_name);
-CREATE INDEX IF NOT EXISTS idx_audit_log_user ON public.audit_log (user_id);
-
-CREATE TABLE IF NOT EXISTS public.employee_identities (
-  employee_id text PRIMARY KEY REFERENCES public.employees(id) ON DELETE CASCADE,
-  aadhaar text NULL,
-  pan text NULL,
-  license_no text NULL,
-  photo_path text NULL,
-  aadhaar_doc_path text NULL,
-  aadhaar_doc_type text NULL,
-  pan_doc_path text NULL,
-  pan_doc_type text NULL,
-  license_doc_path text NULL,
-  license_doc_type text NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-
--- ====================================================================
--- SECTION 3: Helper Functions
--- ====================================================================
-
--- 1. app_role(): Returns current authenticated user's role from profiles
+-- 1. app_role(): Returns current authenticated user's active role
 CREATE OR REPLACE FUNCTION public.app_role()
 RETURNS text
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT role
   FROM public.profiles
@@ -86,13 +24,13 @@ AS $$
     AND active = true;
 $$;
 
--- 2. has_role(VARIADIC roles text[]): Checks if caller matches any of the roles
+-- 2. has_role(VARIADIC roles text[]): Role membership check
 CREATE OR REPLACE FUNCTION public.has_role(VARIADIC roles text[])
 RETURNS boolean
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT EXISTS (
     SELECT 1
@@ -109,7 +47,7 @@ RETURNS text
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT employee_id
   FROM public.profiles
@@ -138,7 +76,7 @@ RETURNS text
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT public.app_role();
 $$;
@@ -148,7 +86,7 @@ RETURNS boolean
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT public.has_role('owner', 'manager');
 $$;
@@ -159,41 +97,23 @@ RETURNS boolean
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
   SELECT EXISTS (
     SELECT 1
-    FROM public.vehicle_trips vt
-    WHERE (
-      vt.data->>'employee' = public.current_employee_id()
-      OR vt.employee_id = public.current_employee_id()
-    )
-    AND (
-      vt.data->>'handoverAt' IS NULL
-      AND vt.data->>'handover_at' IS NULL
-    )
-    AND (
-      (vt.data->'customers') ? p_cust_id
-      OR EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(COALESCE(vt.data->'stops', '[]'::jsonb)) stop
-        WHERE stop->>'cust' = p_cust_id OR stop->>'customer_id' = p_cust_id
-      )
-      OR EXISTS (
-        SELECT 1
-        FROM public.fg f
-        WHERE (f.data->>'trip' = vt.id OR f.data->>'trip_id' = vt.id)
-          AND (f.data->>'cust' = p_cust_id OR f.data->>'customer' = p_cust_id)
-      )
-    )
+    FROM public.trips t
+    JOIN public.trip_stops ts ON ts.trip_id = t.id
+    WHERE t.driver_id = public.current_employee_id()
+      AND t.status IN ('planned', 'loading', 'on_route')
+      AND t.closed_at IS NULL
+      AND ts.customer_id = p_cust_id
   );
 $$;
 
 -- ====================================================================
--- SECTION 4: Profile Service Role Mutation Guard
+-- SECTION 2: Profile Service Role Mutation Guard
 -- ====================================================================
 
--- Profile changes only through the worker's service role
 CREATE OR REPLACE FUNCTION public.check_profile_service_role_only()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -213,43 +133,45 @@ CREATE TRIGGER trg_profile_service_role_only
   FOR EACH ROW EXECUTE FUNCTION public.check_profile_service_role_only();
 
 -- ====================================================================
--- SECTION 5: Enable RLS on Every Table
+-- SECTION 3: Enable RLS on Every Public Table
 -- ====================================================================
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.employee_identities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.price_list ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.bills ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.stock ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.fg ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fg_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customer_prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.price_list ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.prospects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trips ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trip_stops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trip_stop_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cash_handovers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bill_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.attendance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.advances ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.payslips ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.invites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vehicle_trips ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.visits ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.deleted_bills ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.cancelled_bills ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.att_sites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.app_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
 
 -- ====================================================================
--- SECTION 6: Restrict Public / Anon Access
+-- SECTION 4: Restrict Public / Anon Access
 -- ====================================================================
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, public;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
 
--- Drop any previous blanket policies across all tables
+-- Drop previous policies to ensure clean declarative state
 DO $$
 DECLARE
   t text;
@@ -263,52 +185,26 @@ BEGIN
 END $$;
 
 -- ====================================================================
--- SECTION 7: Row-Level Security Policies per Table
+-- SECTION 5: Explicit RLS Policies per Table
 -- ====================================================================
 
--- --------------------------------------------------------------------
 -- 1. PROFILES
--- --------------------------------------------------------------------
--- Users may read their own profile; Owner, Manager, Admin can read profiles.
--- Mutation is restricted to the worker's service role (no INSERT/UPDATE/DELETE policies).
 CREATE POLICY "profiles_select" ON public.profiles
   FOR SELECT TO authenticated
   USING (id = auth.uid() OR public.has_role('owner', 'manager', 'admin'));
 
--- --------------------------------------------------------------------
--- 2. AUDIT_LOG
--- --------------------------------------------------------------------
--- Append-only audit trail: Owner and Admin can SELECT. No role can mutate/delete.
+-- 2. AUDIT_LOG (Owner & Admin Read-Only; Append-Only by Trigger)
 CREATE POLICY "audit_log_select" ON public.audit_log
   FOR SELECT TO authenticated
   USING (public.has_role('owner', 'admin'));
 
--- --------------------------------------------------------------------
--- 3. EMPLOYEE_IDENTITIES
--- --------------------------------------------------------------------
--- Highly confidential PII (Aadhaar, PAN, Licence). Owner only.
-CREATE POLICY "employee_identities_owner_select" ON public.employee_identities
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner'));
-
-CREATE POLICY "employee_identities_owner_insert" ON public.employee_identities
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner'));
-
-CREATE POLICY "employee_identities_owner_update" ON public.employee_identities
-  FOR UPDATE TO authenticated
+-- 3. EMPLOYEE_IDENTITIES (Owner Only)
+CREATE POLICY "employee_identities_owner_all" ON public.employee_identities
+  FOR ALL TO authenticated
   USING (public.has_role('owner'))
   WITH CHECK (public.has_role('owner'));
 
-CREATE POLICY "employee_identities_owner_delete" ON public.employee_identities
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner'));
-
--- --------------------------------------------------------------------
 -- 4. CUSTOMERS
--- --------------------------------------------------------------------
--- Admin, Owner, Manager see all; Employees see only customers on their open trips.
--- Owner and Manager can write. Owner can delete.
 CREATE POLICY "customers_select" ON public.customers
   FOR SELECT TO authenticated
   USING (
@@ -329,9 +225,203 @@ CREATE POLICY "customers_delete" ON public.customers
   FOR DELETE TO authenticated
   USING (public.has_role('owner'));
 
--- --------------------------------------------------------------------
--- 5. BILLS (Financial Ledger: NO DELETE)
--- --------------------------------------------------------------------
+-- 5. CUSTOMER_PRICES & PRICE_LIST (Rate Catalog: NO DELETE)
+CREATE POLICY "customer_prices_select" ON public.customer_prices
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "customer_prices_write" ON public.customer_prices
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "price_list_select" ON public.price_list
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "price_list_write" ON public.price_list
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 6. PROSPECTS
+CREATE POLICY "prospects_select" ON public.prospects
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "prospects_write" ON public.prospects
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 7. ORDERS & ORDER_ITEMS
+CREATE POLICY "orders_select" ON public.orders
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "orders_write" ON public.orders
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "order_items_select" ON public.order_items
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "order_items_write" ON public.order_items
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 8. LOCATIONS
+CREATE POLICY "locations_select" ON public.locations
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin', 'employee'));
+
+CREATE POLICY "locations_write" ON public.locations
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 9. PRODUCTION_RUNS
+CREATE POLICY "production_runs_select" ON public.production_runs
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "production_runs_write" ON public.production_runs
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 10. FG_MOVEMENTS (Stock Ledger: NO DELETE)
+CREATE POLICY "fg_movements_select" ON public.fg_movements
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "fg_movements_insert" ON public.fg_movements
+  FOR INSERT TO authenticated
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "fg_movements_update" ON public.fg_movements
+  FOR UPDATE TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 11. TRIPS
+CREATE POLICY "trips_select" ON public.trips
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR (public.has_role('employee') AND driver_id = public.current_employee_id())
+  );
+
+CREATE POLICY "trips_insert" ON public.trips
+  FOR INSERT TO authenticated
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "trips_update" ON public.trips
+  FOR UPDATE TO authenticated
+  USING (
+    public.has_role('owner', 'manager')
+    OR (public.has_role('employee') AND driver_id = public.current_employee_id())
+  )
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR (public.has_role('employee') AND driver_id = public.current_employee_id())
+  );
+
+CREATE POLICY "trips_delete" ON public.trips
+  FOR DELETE TO authenticated
+  USING (public.has_role('owner', 'manager'));
+
+-- 12. TRIP_STOPS & TRIP_STOP_ITEMS
+CREATE POLICY "trip_stops_select" ON public.trip_stops
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR EXISTS (
+      SELECT 1 FROM public.trips t
+      WHERE t.id = trip_id AND t.driver_id = public.current_employee_id()
+    )
+  );
+
+CREATE POLICY "trip_stops_insert" ON public.trip_stops
+  FOR INSERT TO authenticated
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "trip_stops_update" ON public.trip_stops
+  FOR UPDATE TO authenticated
+  USING (
+    public.has_role('owner', 'manager')
+    OR EXISTS (
+      SELECT 1 FROM public.trips t
+      WHERE t.id = trip_id AND t.driver_id = public.current_employee_id()
+    )
+  )
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR EXISTS (
+      SELECT 1 FROM public.trips t
+      WHERE t.id = trip_id AND t.driver_id = public.current_employee_id()
+    )
+  );
+
+CREATE POLICY "trip_stops_delete" ON public.trip_stops
+  FOR DELETE TO authenticated
+  USING (public.has_role('owner', 'manager'));
+
+CREATE POLICY "trip_stop_items_select" ON public.trip_stop_items
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR EXISTS (
+      SELECT 1 FROM public.trip_stops ts
+      JOIN public.trips t ON t.id = ts.trip_id
+      WHERE ts.id = trip_stop_id AND t.driver_id = public.current_employee_id()
+    )
+  );
+
+CREATE POLICY "trip_stop_items_write" ON public.trip_stop_items
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 13. DELIVERIES
+CREATE POLICY "deliveries_select" ON public.deliveries
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR delivered_by = public.current_employee_id()
+  );
+
+CREATE POLICY "deliveries_insert" ON public.deliveries
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR delivered_by = public.current_employee_id()
+  );
+
+-- 14. CASH_HANDOVERS
+CREATE POLICY "cash_handovers_select" ON public.cash_handovers
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR driver_id = public.current_employee_id()
+  );
+
+CREATE POLICY "cash_handovers_insert" ON public.cash_handovers
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR driver_id = public.current_employee_id()
+  );
+
+CREATE POLICY "cash_handovers_update" ON public.cash_handovers
+  FOR UPDATE TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 15. BILLS (Financial Ledger: NO DELETE)
 CREATE POLICY "bills_select" ON public.bills
   FOR SELECT TO authenticated
   USING (public.has_role('owner', 'manager', 'admin'));
@@ -345,9 +435,21 @@ CREATE POLICY "bills_update" ON public.bills
   USING (public.has_role('owner', 'manager'))
   WITH CHECK (public.has_role('owner', 'manager'));
 
--- --------------------------------------------------------------------
--- 6. PAYMENTS (Financial Ledger: NO DELETE)
--- --------------------------------------------------------------------
+-- 16. BILL_ITEMS (Financial Ledger: NO DELETE)
+CREATE POLICY "bill_items_select" ON public.bill_items
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "bill_items_insert" ON public.bill_items
+  FOR INSERT TO authenticated
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+CREATE POLICY "bill_items_update" ON public.bill_items
+  FOR UPDATE TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 17. PAYMENTS (Financial Ledger: NO DELETE)
 CREATE POLICY "payments_select" ON public.payments
   FOR SELECT TO authenticated
   USING (public.has_role('owner', 'manager', 'admin'));
@@ -361,303 +463,12 @@ CREATE POLICY "payments_update" ON public.payments
   USING (public.has_role('owner', 'manager'))
   WITH CHECK (public.has_role('owner', 'manager'));
 
--- --------------------------------------------------------------------
--- 7. STOCK (Stock Ledger: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "stock_select" ON public.stock
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "stock_insert" ON public.stock
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "stock_update" ON public.stock
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 8. FG (Finished Goods Stock Ledger: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "fg_select" ON public.fg
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "fg_insert" ON public.fg
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "fg_update" ON public.fg
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 9. EXPENSES (Financial Ledger: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "expenses_select" ON public.expenses
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "expenses_insert" ON public.expenses
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "expenses_update" ON public.expenses
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 10. ATTENDANCE
--- --------------------------------------------------------------------
--- Staff sees all; Employees see and mark their own attendance
-CREATE POLICY "attendance_select" ON public.attendance
-  FOR SELECT TO authenticated
-  USING (
-    public.has_role('owner', 'manager', 'admin')
-    OR (public.has_role('employee') AND (data->>'emp' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  );
-
-CREATE POLICY "attendance_insert" ON public.attendance
-  FOR INSERT TO authenticated
-  WITH CHECK (
-    public.has_role('owner', 'manager')
-    OR (public.has_role('employee') AND (data->>'emp' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  );
-
-CREATE POLICY "attendance_update" ON public.attendance
-  FOR UPDATE TO authenticated
-  USING (
-    public.has_role('owner', 'manager')
-    OR (public.has_role('employee') AND (data->>'emp' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  )
-  WITH CHECK (
-    public.has_role('owner', 'manager')
-    OR (public.has_role('employee') AND (data->>'emp' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  );
-
-CREATE POLICY "attendance_delete" ON public.attendance
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 11. ADVANCES (Salary / Payroll: Owner Only, Financial Ledger: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "advances_select" ON public.advances
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner'));
-
-CREATE POLICY "advances_insert" ON public.advances
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner'));
-
-CREATE POLICY "advances_update" ON public.advances
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner'))
-  WITH CHECK (public.has_role('owner'));
-
--- --------------------------------------------------------------------
--- 12. PAYSLIPS (Salary / Payroll: Owner Only, Financial Ledger: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "payslips_select" ON public.payslips
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner'));
-
-CREATE POLICY "payslips_insert" ON public.payslips
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner'));
-
-CREATE POLICY "payslips_update" ON public.payslips
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner'))
-  WITH CHECK (public.has_role('owner'));
-
--- --------------------------------------------------------------------
--- 13. APPLICATIONS (Recruitment / Identities: Owner Only)
--- --------------------------------------------------------------------
-CREATE POLICY "applications_owner_all" ON public.applications
-  FOR ALL TO authenticated
-  USING (public.has_role('owner'))
-  WITH CHECK (public.has_role('owner'));
-
--- --------------------------------------------------------------------
--- 14. INVITES (Recruitment: Owner Only)
--- --------------------------------------------------------------------
-CREATE POLICY "invites_owner_all" ON public.invites
-  FOR ALL TO authenticated
-  USING (public.has_role('owner'))
-  WITH CHECK (public.has_role('owner'));
-
--- --------------------------------------------------------------------
--- 15. VEHICLES (Fleet Directory)
--- --------------------------------------------------------------------
-CREATE POLICY "vehicles_select" ON public.vehicles
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin', 'employee'));
-
-CREATE POLICY "vehicles_insert" ON public.vehicles
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "vehicles_update" ON public.vehicles
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "vehicles_delete" ON public.vehicles
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 16. VEHICLE_TRIPS
--- --------------------------------------------------------------------
--- Staff sees all; Drivers see and update their own trips / stops
-CREATE POLICY "vehicle_trips_select" ON public.vehicle_trips
-  FOR SELECT TO authenticated
-  USING (
-    public.has_role('owner', 'manager', 'admin')
-    OR (public.has_role('employee') AND (data->>'employee' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  );
-
-CREATE POLICY "vehicle_trips_insert" ON public.vehicle_trips
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "vehicle_trips_update" ON public.vehicle_trips
-  FOR UPDATE TO authenticated
-  USING (
-    public.has_role('owner', 'manager')
-    OR (public.has_role('employee') AND (data->>'employee' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  )
-  WITH CHECK (
-    public.has_role('owner', 'manager')
-    OR (public.has_role('employee') AND (data->>'employee' = public.current_employee_id() OR employee_id = public.current_employee_id()))
-  );
-
-CREATE POLICY "vehicle_trips_delete" ON public.vehicle_trips
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 17. VISITS (Salesman Visits & Orders)
--- --------------------------------------------------------------------
-CREATE POLICY "visits_select" ON public.visits
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "visits_insert" ON public.visits
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "visits_update" ON public.visits
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "visits_delete" ON public.visits
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 18. CONTACTS (Contacts Directory)
--- --------------------------------------------------------------------
-CREATE POLICY "contacts_select" ON public.contacts
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "contacts_insert" ON public.contacts
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "contacts_update" ON public.contacts
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "contacts_delete" ON public.contacts
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 19. DELETED_BILLS (Audit Archive: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "deleted_bills_select" ON public.deleted_bills
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "deleted_bills_insert" ON public.deleted_bills
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 20. CANCELLED_BILLS (Audit Archive: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "cancelled_bills_select" ON public.cancelled_bills
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "cancelled_bills_insert" ON public.cancelled_bills
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 21. ATT_SITES (Attendance Geofence Banners / QR Sites)
--- --------------------------------------------------------------------
-CREATE POLICY "att_sites_select" ON public.att_sites
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "att_sites_insert" ON public.att_sites
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "att_sites_update" ON public.att_sites
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "att_sites_delete" ON public.att_sites
-  FOR DELETE TO authenticated
-  USING (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 22. APP_STATE (Business Configuration Snapshot)
--- --------------------------------------------------------------------
-CREATE POLICY "app_state_select" ON public.app_state
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "app_state_update" ON public.app_state
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 23. PRICE_LIST (Rate Catalog: NO DELETE)
--- --------------------------------------------------------------------
-CREATE POLICY "price_list_select" ON public.price_list
-  FOR SELECT TO authenticated
-  USING (public.has_role('owner', 'manager', 'admin'));
-
-CREATE POLICY "price_list_insert" ON public.price_list
-  FOR INSERT TO authenticated
-  WITH CHECK (public.has_role('owner', 'manager'));
-
-CREATE POLICY "price_list_update" ON public.price_list
-  FOR UPDATE TO authenticated
-  USING (public.has_role('owner', 'manager'))
-  WITH CHECK (public.has_role('owner', 'manager'));
-
--- --------------------------------------------------------------------
--- 24. EMPLOYEES (General Employee Records)
--- --------------------------------------------------------------------
+-- 18. EMPLOYEES
 CREATE POLICY "employees_select" ON public.employees
   FOR SELECT TO authenticated
   USING (
     public.has_role('owner', 'manager', 'admin')
-    OR (public.has_role('employee') AND (id = public.current_employee_id() OR data->>'emp' = public.current_employee_id()))
+    OR (public.has_role('employee') AND id = public.current_employee_id())
   );
 
 CREATE POLICY "employees_insert" ON public.employees
@@ -673,13 +484,82 @@ CREATE POLICY "employees_delete" ON public.employees
   FOR DELETE TO authenticated
   USING (public.has_role('owner'));
 
+-- 19. VEHICLES
+CREATE POLICY "vehicles_select" ON public.vehicles
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin', 'employee'));
+
+CREATE POLICY "vehicles_write" ON public.vehicles
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 20. ATTENDANCE
+CREATE POLICY "attendance_select" ON public.attendance
+  FOR SELECT TO authenticated
+  USING (
+    public.has_role('owner', 'manager', 'admin')
+    OR (public.has_role('employee') AND employee_id = public.current_employee_id())
+  );
+
+CREATE POLICY "attendance_insert" ON public.attendance
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR (public.has_role('employee') AND employee_id = public.current_employee_id())
+  );
+
+CREATE POLICY "attendance_update" ON public.attendance
+  FOR UPDATE TO authenticated
+  USING (
+    public.has_role('owner', 'manager')
+    OR (public.has_role('employee') AND employee_id = public.current_employee_id())
+  )
+  WITH CHECK (
+    public.has_role('owner', 'manager')
+    OR (public.has_role('employee') AND employee_id = public.current_employee_id())
+  );
+
+CREATE POLICY "attendance_delete" ON public.attendance
+  FOR DELETE TO authenticated
+  USING (public.has_role('owner', 'manager'));
+
+-- 21. ADVANCES (Owner Only, Financial Ledger: NO DELETE)
+CREATE POLICY "advances_select" ON public.advances
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner'));
+
+CREATE POLICY "advances_write" ON public.advances
+  FOR ALL TO authenticated
+  USING (public.has_role('owner'))
+  WITH CHECK (public.has_role('owner'));
+
+-- 22. EXPENSES (Financial Ledger: NO DELETE)
+CREATE POLICY "expenses_select" ON public.expenses
+  FOR SELECT TO authenticated
+  USING (public.has_role('owner', 'manager', 'admin'));
+
+CREATE POLICY "expenses_write" ON public.expenses
+  FOR ALL TO authenticated
+  USING (public.has_role('owner', 'manager'))
+  WITH CHECK (public.has_role('owner', 'manager'));
+
+-- 23. IDEMPOTENCY_KEYS
+CREATE POLICY "idempotency_keys_user_select" ON public.idempotency_keys
+  FOR SELECT TO authenticated
+  USING (user_id = auth.uid());
+
+CREATE POLICY "idempotency_keys_user_insert" ON public.idempotency_keys
+  FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
 -- ====================================================================
--- SECTION 8: Revoke Function Execution from PUBLIC and anon
+-- SECTION 6: Revoke Function Execution from PUBLIC and anon
 -- ====================================================================
 
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, anon;
 
--- Explicitly grant execution on client-callable helper functions to authenticated & service_role
+-- Explicitly grant client-callable helper functions to authenticated & service_role
 GRANT EXECUTE ON FUNCTION public.app_role() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.has_role(text[]) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.current_employee_id() TO authenticated, service_role;
@@ -687,45 +567,34 @@ GRANT EXECUTE ON FUNCTION public.role_rank(text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.my_role() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_staff() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.is_customer_on_my_open_trip(text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.next_bill_no(date) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.next_payment_id(date) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.next_customer_id() TO authenticated, service_role;
 
 COMMIT;
 
 -- ====================================================================
--- SECTION 9: Verification Queries
+-- SECTION 7: Verification Queries
 -- ====================================================================
 
--- Query 1: Tables in public schema that do NOT have RLS enabled (MUST return 0 rows)
-SELECT
-  schemaname,
-  tablename,
-  rowsecurity
+-- 1. Tables in public schema that do NOT have RLS enabled (MUST return 0 rows)
+SELECT schemaname, tablename, rowsecurity
 FROM pg_tables
-WHERE schemaname = 'public'
-  AND rowsecurity = false;
+WHERE schemaname = 'public' AND rowsecurity = false;
 
--- Query 2: Any policy where qual or with_check evaluates to literal 'true' (MUST return 0 rows)
-SELECT
-  schemaname,
-  tablename,
-  policyname,
-  cmd,
-  qual,
-  with_check
+-- 2. Policies where qual or with_check evaluates to literal 'true' (MUST return 0 rows)
+SELECT schemaname, tablename, policyname, cmd, qual, with_check
 FROM pg_policies
 WHERE schemaname = 'public'
   AND (trim(qual) = 'true' OR trim(with_check) = 'true');
 
--- Query 3: Functions executable by 'anon' or 'public' (MUST return 0 rows)
-SELECT
-  routine_schema,
-  routine_name,
-  grantee,
-  privilege_type
+-- 3. Functions executable by 'anon' or 'public' (MUST return 0 rows)
+SELECT routine_schema, routine_name, grantee, privilege_type
 FROM information_schema.routine_privileges
 WHERE routine_schema = 'public'
   AND grantee IN ('anon', 'public');
 
--- Query 4: Test Matrix of Role × Table Permissions
+-- 4. Test Matrix of Role × Table Permissions
 /*
 =================================================================================================================================
                                             ROLE × TABLE PERMISSIONS MATRIX
@@ -736,38 +605,30 @@ profiles                | SELECT           | SELECT                | SELECT     
 audit_log               | SELECT           | SELECT                | NO ACCESS             | NO ACCESS
 employee_identities     | NO ACCESS        | SELECT,INS,UPD,DEL    | NO ACCESS             | NO ACCESS
 customers               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD        | SELECT (open trips only)
+customer_prices         | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
+price_list              | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
+prospects               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
+orders                  | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
+order_items             | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
+locations               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT
+production_runs         | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
+fg_movements            | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
+trips                   | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT, UPDATE (assigned trip)
+trip_stops              | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT, UPDATE (assigned trip)
+trip_stop_items         | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT (assigned trip)
+deliveries              | SELECT           | SELECT,INSERT         | SELECT,INSERT         | SELECT, INSERT (assigned trip)
+cash_handovers          | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | SELECT, INSERT (own trip handover)
 bills                   | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO DIRECT ACCESS (RPC only)
+bill_items              | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO DIRECT ACCESS (RPC only)
 payments                | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO DIRECT ACCESS (RPC only)
-stock                   | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO DIRECT ACCESS (RPC only)
-fg                      | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO DIRECT ACCESS (RPC only)
-expenses                | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
+employees               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD        | SELECT (self only)
+vehicles                | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT
 attendance              | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT, INSERT (own attendance only)
 advances                | NO ACCESS        | SELECT,INS,UPD        | NO ACCESS             | NO ACCESS
-payslips                | NO ACCESS        | SELECT,INS,UPD        | NO ACCESS             | NO ACCESS
-applications            | NO ACCESS        | SELECT,INS,UPD,DEL    | NO ACCESS             | NO ACCESS
-invites                 | NO ACCESS        | SELECT,INS,UPD,DEL    | NO ACCESS             | NO ACCESS
-vehicles                | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT (fleet reference)
-vehicle_trips           | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | SELECT, UPDATE (own trips only)
-visits                  | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
-contacts                | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
-deleted_bills           | SELECT           | SELECT,INSERT         | SELECT,INSERT         | NO ACCESS
-cancelled_bills         | SELECT           | SELECT,INSERT         | SELECT,INSERT         | NO ACCESS
-att_sites               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD,DEL    | NO ACCESS
-app_state               | SELECT           | SELECT,UPDATE         | SELECT,UPDATE         | NO ACCESS
-price_list              | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
-employees               | SELECT           | SELECT,INS,UPD,DEL    | SELECT,INS,UPD        | SELECT (self only)
+expenses                | SELECT           | SELECT,INS,UPD        | SELECT,INS,UPD        | NO ACCESS
+idempotency_keys        | NO ACCESS        | SELECT,INSERT (self)  | SELECT,INSERT (self)  | SELECT, INSERT (self)
 =================================================================================================================================
 Financial & Stock Ledgers with Immutability (ZERO DELETE policies):
-- bills, payments, stock, fg, expenses, advances, payslips, price_list, deleted_bills, cancelled_bills, audit_log
+- bills, bill_items, payments, fg_movements, expenses, advances, customer_prices, price_list, cash_handovers, audit_log
 =================================================================================================================================
 */
-
--- Live query validating all active policies across the public schema
-SELECT
-  tablename,
-  policyname,
-  cmd,
-  roles
-FROM pg_policies
-WHERE schemaname = 'public'
-ORDER BY tablename, policyname;
