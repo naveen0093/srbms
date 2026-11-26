@@ -1,9 +1,9 @@
 {
-  "name": "srbms",
+  "name": "larven-bms",
   "version": "1.0.0",
-  "description": "SR Industries - Bottling Plant Business Management System",
+  "description": "Larven Enterprises BMS (SR PLUS+)",
   "private": true,
   "scripts": {
-    "test": "node tests/test_vendor_csp_appjs.mjs && node tests/test_pii_masking_and_retention.mjs && node tests/test_public_isolation.mjs"
+    "dev": "wrangler pages dev public --kv KV --port 8788 --ip 127.0.0.1"
   }
 }
