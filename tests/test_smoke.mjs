@@ -58,7 +58,73 @@ const mockDoc = {
 };
 
 const storageMap = {};
+
+class MockIDBDatabase {
+  constructor(name) {
+    this.name = name;
+    this.stores = {};
+    this.objectStoreNames = { contains: (n) => Boolean(this.stores[n]) };
+  }
+  createObjectStore(name, opts) {
+    this.stores[name] = { keyPath: opts && opts.keyPath, items: new Map(), indexes: {} };
+    return { createIndex: (idx, kp, o) => { this.stores[name].indexes[idx] = { kp, o }; } };
+  }
+  transaction(stores, mode) {
+    const self = this;
+    const tx = {
+      oncomplete: null,
+      onerror: null,
+      objectStore: (n) => {
+        const s = self.stores[n];
+        return {
+          put: (v) => {
+            const k = (s && s.keyPath && v[s.keyPath]) || v.id;
+            if (s) s.items.set(k, JSON.parse(JSON.stringify(v)));
+            const req = { onsuccess: null, onerror: null };
+            queueMicrotask(() => { if (req.onsuccess) req.onsuccess({ target: { result: k } }); });
+            return req;
+          },
+          get: (k) => {
+            const res = (s && s.items.get(k)) || null;
+            const req = { onsuccess: null, onerror: null, result: res ? JSON.parse(JSON.stringify(res)) : null };
+            queueMicrotask(() => { if (req.onsuccess) req.onsuccess({ target: { result: req.result } }); });
+            return req;
+          },
+          getAll: () => {
+            const arr = s ? Array.from(s.items.values()).map(x => JSON.parse(JSON.stringify(x))) : [];
+            const req = { onsuccess: null, onerror: null, result: arr };
+            queueMicrotask(() => { if (req.onsuccess) req.onsuccess({ target: { result: req.result } }); });
+            return req;
+          },
+          delete: (k) => {
+            if (s) s.items.delete(k);
+            const req = { onsuccess: null, onerror: null };
+            queueMicrotask(() => { if (req.onsuccess) req.onsuccess({ target: { result: undefined } }); });
+            return req;
+          }
+        };
+      }
+    };
+    queueMicrotask(() => { queueMicrotask(() => { if (tx.oncomplete) tx.oncomplete(); }); });
+    return tx;
+  }
+}
+const mockIndexedDB = {
+  open: (name, v) => {
+    const req = { onsuccess: null, onerror: null, onupgradeneeded: null };
+    queueMicrotask(() => {
+      if (!mockIndexedDB._db) {
+        mockIndexedDB._db = new MockIDBDatabase(name);
+        if (req.onupgradeneeded) req.onupgradeneeded({ target: { result: mockIndexedDB._db } });
+      }
+      if (req.onsuccess) req.onsuccess({ target: { result: mockIndexedDB._db } });
+    });
+    return req;
+  }
+};
+
 const mockWindow = {
+  indexedDB: mockIndexedDB,
   location: {
     href: 'http://127.0.0.1:8788/#dashboard',
     hash: '#dashboard',
@@ -586,5 +652,238 @@ const tripExp = 800;
 const expectedNet = Math.max(0, grossCash - tripExp);
 assert.strictEqual(expectedNet, 3700, 'Formula Net Cash = Gross Cash - Driver Expenses is correct');
 console.log('  ✓ Day Close & Cash Handover verified (reconciliation metrics, Net Cash formula, supervisor settlement receipt CHO-YYMM-XXXX)');
+
+// 12. Validating Online-First Outbox, IndexedDB Queue, Reconnect Sync & Needs Attention
+console.log('12. Validating Online-First Outbox, IndexedDB Queue, Reconnect Sync & Needs Attention...');
+
+// Scenario 1: Airplane-mode delivery
+console.log('  Testing Scenario 1: Airplane-mode delivery...');
+const tripTR101 = context.window.S.trips.find(t => t.id === 'TR-101');
+assert.ok(tripTR101, 'Trip TR-101 exists');
+const cachedData = context.window.cacheTripAtStart(tripTR101);
+assert.ok(cachedData, 'Trip cached at start');
+assert.strictEqual(cachedData.trip_id, 'TR-101', 'Cached trip ID matches');
+assert.ok(cachedData.stops.length > 0, 'Cached stops exist');
+assert.ok(cachedData.customers.length > 0, 'Cached customers on trip exist');
+assert.ok(cachedData.customers[0].last_rates, 'Cached customer has last rates');
+
+// Simulate airplane mode: navigator.onLine = false
+context.window.navigator.onLine = false;
+
+// Driver executes delivery at stop TS-101-1 while offline
+const stop1 = context.window.S.tripStops.find(s => s.id === 'TS-101-1');
+assert.ok(stop1, 'Stop TS-101-1 exists');
+
+const offlinePayload = {
+  p_trip_id: 'TR-101',
+  p_stop_id: stop1.id,
+  p_customer_id: stop1.customer_id,
+  p_items: [{ p: '20 L Can', q: 10, r: 40 }],
+  p_total: 400,
+  p_amount_received: 400,
+  p_payment_mode: 'Cash',
+  p_empty_cans_returned: 10,
+  p_notes: 'Delivered in offline airplane mode'
+};
+
+const writeRes = await context.window.onlineFirstWrite('deliver_stop', '/api/rpc/deliver_stop', offlinePayload, {
+  tripId: 'TR-101',
+  stopId: stop1.id
+});
+
+assert.strictEqual(writeRes.ok, true, 'Write result is ok');
+assert.strictEqual(writeRes.online, false, 'Write result is offline');
+assert.strictEqual(writeRes.queued, true, 'Write result is queued');
+assert.ok(writeRes.idempotency_key.startsWith('idem_deliver_stop_'), 'Idempotency key generated');
+assert.ok(writeRes.provisional_receipt.startsWith('PROV-TR-101-'), 'Provisional receipt starts with PROV-TR-101-');
+
+// Check that item is in OutboxDB with status 'pending'
+const pendingItems = await context.window.OutboxDB.getAllPending();
+assert.ok(pendingItems.length >= 1, 'OutboxDB contains pending items');
+const queuedItem = pendingItems.find(x => x.idempotency_key === writeRes.idempotency_key);
+assert.ok(queuedItem, 'Queued item found in OutboxDB');
+assert.strictEqual(queuedItem.status, 'pending', 'Status is pending');
+assert.strictEqual(queuedItem.provisional_receipt, writeRes.provisional_receipt, 'Provisional receipt matches');
+
+// Set stop to provisional delivery state and render UI
+stop1.status = 'delivered';
+stop1.provisional_receipt = writeRes.provisional_receipt;
+const routeHtmlOffline = context.window.PAGES['my-route']();
+assert.ok(routeHtmlOffline.includes('Pending Sync'), 'UI displays Pending Sync banner');
+assert.ok(routeHtmlOffline.includes(writeRes.provisional_receipt), 'UI displays provisional receipt number');
+console.log('    ✓ Airplane-mode delivery verified (cached trip at start, queued to outbox with idempotency key, PROV receipt shown in UI)');
+
+// Scenario 2: Double sync
+console.log('  Testing Scenario 2: Double sync...');
+// Connection restores: navigator.onLine = true
+context.window.navigator.onLine = true;
+context.window.setSession({ user: { id: 'u-driver', role: 'employee' }, token: 'valid-test-token-123' });
+
+// Mock server RPC endpoint returning official invoice on first call
+let serverCallCount = 0;
+const officialInvoiceNo = 'SR/26-27/8899';
+context.window.fetch = async (url, opts) => {
+  serverCallCount++;
+  const body = JSON.parse(opts.body);
+  const isDuplicate = (serverCallCount > 1);
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true,
+      duplicate: isDuplicate,
+      official_invoice_no: officialInvoiceNo,
+      provisional_id: body.p_provisional_id,
+      bill_id: officialInvoiceNo
+    })
+  };
+};
+
+// First sync:
+const initialPending = await context.window.OutboxDB.getAllPending();
+assert.ok(initialPending.length >= 1, 'Pending items exist before sync');
+await context.window.syncOutbox();
+assert.strictEqual(serverCallCount, initialPending.length, 'Server called for each pending item in per-trip order');
+
+// Verify provisional receipt replaced with official invoice
+assert.strictEqual(stop1.official_invoice_no, officialInvoiceNo, 'Stop official invoice number updated');
+assert.strictEqual(stop1.provisional_receipt, null, 'Stop provisional receipt cleared');
+
+const pendingAfterSync = await context.window.OutboxDB.getAllPending();
+assert.strictEqual(pendingAfterSync.length, 0, 'OutboxDB pending queue empty after sync');
+
+// Simulate a duplicate sync attempt (e.g. client retries or resends with same idempotency key)
+await context.window.OutboxDB.enqueue(queuedItem);
+assert.strictEqual((await context.window.OutboxDB.getAllPending()).length, 1, 'Item re-enqueued for duplicate test');
+
+// Second sync (server will return duplicate: true)
+await context.window.syncOutbox();
+assert.strictEqual(serverCallCount, initialPending.length + 1, 'Server called on second sync');
+const pendingAfterDoubleSync = await context.window.OutboxDB.getAllPending();
+assert.strictEqual(pendingAfterDoubleSync.length, 0, 'Duplicate response counted as success, queue empty');
+assert.strictEqual(stop1.official_invoice_no, officialInvoiceNo, 'Official invoice intact without duplicates');
+console.log('    ✓ Double sync verified (duplicate response counts as success, official invoice replaces provisional, no duplicate bills)');
+
+// Scenario 3: Expired session while offline
+console.log('  Testing Scenario 3: Expired session while offline...');
+// Driver goes offline again and records delivery at Stop TS-101-2
+context.window.navigator.onLine = false;
+const stop2 = context.window.S.tripStops.find(s => s.id === 'TS-101-2');
+assert.ok(stop2, 'Stop TS-101-2 exists');
+
+const offRes2 = await context.window.onlineFirstWrite('deliver_stop', '/api/rpc/deliver_stop', {
+  p_trip_id: 'TR-101',
+  p_stop_id: stop2.id,
+  p_customer_id: stop2.customer_id,
+  p_items: [{ p: '1 L', q: 5, r: 108 }],
+  p_total: 540,
+  p_amount_received: 540,
+  p_payment_mode: 'Cash'
+}, { tripId: 'TR-101', stopId: stop2.id });
+
+assert.strictEqual(offRes2.queued, true, 'Second offline delivery queued');
+
+// Driver session expires / logs out
+context.window.handleLogout();
+assert.strictEqual(context.window.getSession(), null, 'Session is cleared on logout');
+
+// Verify outbox queue is NOT cleared on logout!
+const queueAfterLogout = await context.window.OutboxDB.getAllPending();
+assert.ok(queueAfterLogout.length >= 1, 'Outbox queue preserved across logout');
+
+// Reconnect occurs while session is expired: mock fetch returns 401 Unauthorized
+context.window.navigator.onLine = true;
+let unauthorizedCalled = false;
+context.window.fetch = async (url, opts) => {
+  unauthorizedCalled = true;
+  return {
+    ok: false,
+    status: 401,
+    json: async () => ({ error: 'unauthorized', message: 'JWT expired' })
+  };
+};
+
+await context.window.syncOutbox();
+// Sync must pause gracefully, without dropping or losing items
+const queueAfter401 = await context.window.OutboxDB.getAllPending();
+assert.strictEqual(queueAfter401.length, queueAfterLogout.length, 'Queue preserved intact during 401 expired session');
+
+// Driver logs back in with refreshed token
+context.window.setSession({ user: { id: 'u-driver', role: 'employee' }, token: 'fresh-valid-token-456' });
+
+// Mock server accepts the fresh token and issues official invoice
+const officialInv2 = 'SR/26-27/9900';
+context.window.fetch = async (url, opts) => {
+  assert.ok(opts.headers.authorization.includes('fresh-valid-token-456'), 'Request carried fresh token');
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true,
+      official_invoice_no: officialInv2,
+      bill_id: officialInv2
+    })
+  };
+};
+
+await context.window.syncOutbox();
+const queueAfterFreshLogin = await context.window.OutboxDB.getAllPending();
+assert.strictEqual(queueAfterFreshLogin.length, 0, 'Outbox successfully synced after re-login with fresh token');
+console.log('    ✓ Expired session while offline verified (queue NOT cleared on logout, sync paused on 401, resumed after re-login)');
+
+// Scenario 4: Trip cancelled by a manager while the driver is offline
+console.log('  Testing Scenario 4: Trip cancelled by manager while driver was offline...');
+// Driver goes offline and records delivery on trip TR-101
+context.window.navigator.onLine = false;
+const offRes3 = await context.window.onlineFirstWrite('deliver_stop', '/api/rpc/deliver_stop', {
+  p_trip_id: 'TR-101',
+  p_stop_id: 'TS-101-3',
+  p_customer_id: 'C3',
+  p_items: [{ p: '20 L Can', q: 5, r: 40 }],
+  p_total: 200
+}, { tripId: 'TR-101', stopId: 'TS-101-3' });
+
+assert.strictEqual(offRes3.queued, true, 'Third offline delivery queued');
+
+// In the meantime, manager cancelled the trip on the server!
+// When driver comes online and syncs, server returns 409 Conflict trip_cancelled
+context.window.navigator.onLine = true;
+context.window.fetch = async (url, opts) => {
+  return {
+    ok: false,
+    status: 409,
+    json: async () => ({
+      ok: false,
+      error: 'trip_cancelled',
+      message: 'Trip was cancelled by manager while driver was offline'
+    })
+  };
+};
+
+await context.window.syncOutbox();
+
+// Verify item was removed from pending outbox and moved to needs_attention
+const pendingAfterCancel = await context.window.OutboxDB.getAllPending();
+assert.strictEqual(pendingAfterCancel.length, 0, 'Pending outbox is clear');
+
+const attentionList = await context.window.OutboxDB.getAttention();
+assert.ok(attentionList.length >= 1, 'Needs Attention list contains the rejected item');
+const attItem = attentionList.find(x => x.action === 'deliver_stop');
+assert.ok(attItem, 'Needs Attention item found');
+assert.strictEqual(attItem.error_code, 'trip_cancelled', 'Error code is trip_cancelled');
+assert.strictEqual(attItem.reason, 'Trip was cancelled by manager while driver was offline', 'Reason matches server rejection');
+
+// Verify UI renders Needs Attention card with reason and action buttons
+const routeHtmlAttention = context.window.PAGES['my-route']();
+assert.ok(routeHtmlAttention.includes('Needs Attention'), 'UI renders Needs Attention card');
+assert.ok(routeHtmlAttention.includes('Trip was cancelled by manager while driver was offline'), 'UI displays rejection reason');
+assert.ok(routeHtmlAttention.includes('data-route-act="retry-attention"'), 'UI includes Retry button');
+assert.ok(routeHtmlAttention.includes('data-route-act="dismiss-attention"'), 'UI includes Dismiss button');
+
+// Test dismiss functionality
+await context.window.OutboxDB.removeAttention(attItem.id);
+const attentionAfterDismiss = await context.window.OutboxDB.getAttention();
+assert.strictEqual(attentionAfterDismiss.length, 0, 'Attention list empty after dismiss');
+console.log('    ✓ Trip cancelled while offline verified (409 Conflict moved to Needs Attention with reason, UI card rendered with Retry/Dismiss)');
 
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

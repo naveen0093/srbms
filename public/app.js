@@ -172,6 +172,22 @@ function queueOfflineDelivery(tripId, data) {
   var outbox = getOutbox();
   outbox.push(item);
   saveOutbox(outbox);
+  if (typeof OutboxDB !== 'undefined' && OutboxDB.enqueue) {
+    OutboxDB.enqueue({
+      id: provId,
+      idempotency_key: 'idem_' + provId,
+      action: 'deliver_stop',
+      endpoint: '/api/rpc/deliver_stop',
+      trip_id: tripId,
+      stop_id: (data && data.stop_id) || '',
+      payload: data || {},
+      provisional_receipt: provId,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      attempts: 0,
+      last_error: null
+    });
+  }
   return provId;
 }
 
@@ -3143,6 +3159,575 @@ function executeGpsCapture(custId) {
   });
 }
 
+/* ---------- (8B) IndexedDB Online-First Outbox, Cache & Sync ---------- */
+var DB_NAME = 'larven_outbox_v1';
+var DB_VERSION = 1;
+
+var OutboxDB = {
+  db: null,
+  state: {
+    pendingItems: [],
+    attentionItems: [],
+    cachedTrips: {}
+  },
+  _initPromise: null,
+
+  init: function() {
+    if (this._initPromise) return this._initPromise;
+    var self = this;
+    this._initPromise = new Promise(function(resolve) {
+      if (typeof indexedDB === 'undefined') {
+        self._loadFallback();
+        return resolve(self);
+      }
+      try {
+        var req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = function(e) {
+          var db = e.target.result;
+          if (!db.objectStoreNames.contains('outbox')) {
+            var outStore = db.createObjectStore('outbox', { keyPath: 'id' });
+            outStore.createIndex('trip_id', 'trip_id', { unique: false });
+            outStore.createIndex('status', 'status', { unique: false });
+            outStore.createIndex('created_at', 'created_at', { unique: false });
+          }
+          if (!db.objectStoreNames.contains('trip_cache')) {
+            db.createObjectStore('trip_cache', { keyPath: 'trip_id' });
+          }
+          if (!db.objectStoreNames.contains('needs_attention')) {
+            db.createObjectStore('needs_attention', { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = function(e) {
+          self.db = e.target.result;
+          self._refreshState().then(function() {
+            resolve(self);
+          });
+        };
+        req.onerror = function() {
+          self._loadFallback();
+          resolve(self);
+        };
+      } catch(err) {
+        self._loadFallback();
+        resolve(self);
+      }
+    });
+    return this._initPromise;
+  },
+
+  _loadFallback: function() {
+    try {
+      var rawOutbox = localStorage.getItem('larven_idb_outbox');
+      this.state.pendingItems = rawOutbox ? JSON.parse(rawOutbox) : [];
+      var rawAtt = localStorage.getItem('larven_idb_attention');
+      this.state.attentionItems = rawAtt ? JSON.parse(rawAtt) : [];
+      var rawCache = localStorage.getItem('larven_idb_trip_cache');
+      this.state.cachedTrips = rawCache ? JSON.parse(rawCache) : {};
+    } catch(e) {
+      this.state.pendingItems = [];
+      this.state.attentionItems = [];
+      this.state.cachedTrips = {};
+    }
+  },
+
+  _saveFallback: function() {
+    try {
+      localStorage.setItem('larven_idb_outbox', JSON.stringify(this.state.pendingItems));
+      localStorage.setItem('larven_idb_attention', JSON.stringify(this.state.attentionItems));
+      localStorage.setItem('larven_idb_trip_cache', JSON.stringify(this.state.cachedTrips));
+    } catch(e) {}
+  },
+
+  _refreshState: function() {
+    var self = this;
+    if (!this.db) {
+      this._loadFallback();
+      return Promise.resolve();
+    }
+    return new Promise(function(resolve) {
+      try {
+        var tx = self.db.transaction(['outbox', 'needs_attention', 'trip_cache'], 'readonly');
+        var outStore = tx.objectStore('outbox');
+        var attStore = tx.objectStore('needs_attention');
+        var cacheStore = tx.objectStore('trip_cache');
+
+        var getAllOut = outStore.getAll();
+        getAllOut.onsuccess = function() {
+          self.state.pendingItems = (getAllOut.result || []).filter(function(x) { return x.status === 'pending'; });
+        };
+
+        var getAllAtt = attStore.getAll();
+        getAllAtt.onsuccess = function() {
+          self.state.attentionItems = getAllAtt.result || [];
+        };
+
+        var getAllCache = cacheStore.getAll();
+        getAllCache.onsuccess = function() {
+          var m = {};
+          (getAllCache.result || []).forEach(function(c) { m[c.trip_id] = c; });
+          self.state.cachedTrips = m;
+        };
+
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch(e) {
+        self._loadFallback();
+        resolve();
+      }
+    });
+  },
+
+  enqueue: async function(item) {
+    await this.init();
+    if (!this.db) {
+      var existingIdx = this.state.pendingItems.findIndex(function(x) { return x.id === item.id; });
+      if (existingIdx >= 0) this.state.pendingItems[existingIdx] = item;
+      else this.state.pendingItems.push(item);
+      this._saveFallback();
+      return item;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['outbox'], 'readwrite');
+        var req = tx.objectStore('outbox').put(item);
+        req.onsuccess = function() {
+          self._refreshState().then(function() { resolve(item); });
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        self.state.pendingItems.push(item);
+        self._saveFallback();
+        resolve(item);
+      }
+    });
+  },
+
+  update: async function(item) {
+    await this.init();
+    if (!this.db) {
+      var idx = this.state.pendingItems.findIndex(function(x) { return x.id === item.id; });
+      if (idx >= 0) this.state.pendingItems[idx] = item;
+      this._saveFallback();
+      return item;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['outbox'], 'readwrite');
+        var req = tx.objectStore('outbox').put(item);
+        req.onsuccess = function() {
+          self._refreshState().then(function() { resolve(item); });
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        var idx2 = self.state.pendingItems.findIndex(function(x) { return x.id === item.id; });
+        if (idx2 >= 0) self.state.pendingItems[idx2] = item;
+        self._saveFallback();
+        resolve(item);
+      }
+    });
+  },
+
+  remove: async function(id) {
+    await this.init();
+    if (!this.db) {
+      this.state.pendingItems = this.state.pendingItems.filter(function(x) { return x.id !== id; });
+      this._saveFallback();
+      return;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['outbox'], 'readwrite');
+        var req = tx.objectStore('outbox').delete(id);
+        req.onsuccess = function() {
+          self._refreshState().then(resolve);
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        self.state.pendingItems = self.state.pendingItems.filter(function(x) { return x.id !== id; });
+        self._saveFallback();
+        resolve();
+      }
+    });
+  },
+
+  getAllPending: async function() {
+    await this.init();
+    await this._refreshState();
+    return this.state.pendingItems.slice();
+  },
+
+  cacheTrip: async function(tripData) {
+    await this.init();
+    if (!this.db) {
+      this.state.cachedTrips[tripData.trip_id] = tripData;
+      this._saveFallback();
+      return tripData;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['trip_cache'], 'readwrite');
+        var req = tx.objectStore('trip_cache').put(tripData);
+        req.onsuccess = function() {
+          self._refreshState().then(function() { resolve(tripData); });
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        self.state.cachedTrips[tripData.trip_id] = tripData;
+        self._saveFallback();
+        resolve(tripData);
+      }
+    });
+  },
+
+  getCachedTrip: async function(tripId) {
+    await this.init();
+    return this.state.cachedTrips[tripId] || null;
+  },
+
+  addAttention: async function(item) {
+    await this.init();
+    if (!this.db) {
+      var idx = this.state.attentionItems.findIndex(function(x) { return x.id === item.id; });
+      if (idx >= 0) this.state.attentionItems[idx] = item;
+      else this.state.attentionItems.push(item);
+      this._saveFallback();
+      return item;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['needs_attention'], 'readwrite');
+        var req = tx.objectStore('needs_attention').put(item);
+        req.onsuccess = function() {
+          self._refreshState().then(function() { resolve(item); });
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        self.state.attentionItems.push(item);
+        self._saveFallback();
+        resolve(item);
+      }
+    });
+  },
+
+  getAttention: async function() {
+    await this.init();
+    await this._refreshState();
+    return this.state.attentionItems.slice();
+  },
+
+  removeAttention: async function(id) {
+    await this.init();
+    if (!this.db) {
+      this.state.attentionItems = this.state.attentionItems.filter(function(x) { return x.id !== id; });
+      this._saveFallback();
+      return;
+    }
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        var tx = self.db.transaction(['needs_attention'], 'readwrite');
+        var req = tx.objectStore('needs_attention').delete(id);
+        req.onsuccess = function() {
+          self._refreshState().then(resolve);
+        };
+        req.onerror = function(e) { reject(e); };
+      } catch(e) {
+        self.state.attentionItems = this.state.attentionItems.filter(function(x) { return x.id !== id; });
+        self._saveFallback();
+        resolve();
+      }
+    });
+  },
+
+  retryAttention: async function(id) {
+    var attItem = this.state.attentionItems.find(function(x) { return x.id === id; });
+    if (!attItem) return;
+    await this.removeAttention(id);
+    var outboxItem = {
+      id: attItem.id,
+      idempotency_key: attItem.id,
+      action: attItem.action,
+      endpoint: '/api/rpc/' + attItem.action,
+      trip_id: attItem.trip_id,
+      stop_id: attItem.stop_id,
+      payload: attItem.payload,
+      provisional_receipt: attItem.provisional_receipt,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      attempts: 0,
+      last_error: null
+    };
+    await this.enqueue(outboxItem);
+  }
+};
+OutboxDB.init();
+
+function replaceProvisionalReceipt(provId, officialNo, tripId, stopId) {
+  if (!provId || !officialNo) return;
+  (S.bills || []).forEach(function(b) {
+    if (b.provisional_id === provId || b.id === provId) {
+      b.id = officialNo;
+      b.official_invoice_no = officialNo;
+      b.provisional_id = null;
+    }
+  });
+  (S.deliveries || []).forEach(function(d) {
+    if (d.provisional_id === provId || d.bill_id === provId) {
+      d.bill_id = officialNo;
+      d.official_invoice_no = officialNo;
+      d.provisional_id = null;
+    }
+  });
+  (S.payments || []).forEach(function(p) {
+    if (p.bill === provId) {
+      p.bill = officialNo;
+    }
+  });
+  (S.tripStops || []).forEach(function(s) {
+    if ((stopId && s.id === stopId) || s.provisional_receipt === provId) {
+      s.provisional_receipt = null;
+      s.official_invoice_no = officialNo;
+    }
+  });
+  save();
+}
+
+function cacheTripAtStart(trip) {
+  if (!trip) return;
+  var stops = (S.tripStops || []).filter(function(s) { return s.trip_id === trip.id; });
+  var custIds = {};
+  stops.forEach(function(s) { custIds[s.customer_id] = true; });
+
+  var custs = (S.customers || []).filter(function(c) { return custIds[c.id]; }).map(function(c) {
+    var custBills = (S.bills || []).filter(function(b) { return b.cust === c.id; });
+    var lastBill = custBills[custBills.length - 1];
+    var lastRates = {};
+    if (lastBill && Array.isArray(lastBill.items)) {
+      lastBill.items.forEach(function(it) {
+        lastRates[it.p] = it.r;
+      });
+    }
+    stops.filter(function(s) { return s.customer_id === c.id; }).forEach(function(cs) {
+      if (Array.isArray(cs.items)) {
+        cs.items.forEach(function(it) {
+          if (it.rate != null) lastRates[it.product_name] = it.rate;
+        });
+      }
+    });
+    return Object.assign({}, c, { last_rates: lastRates });
+  });
+
+  var prods = (S.settings && S.settings.products) || defProducts();
+
+  var cacheData = {
+    trip_id: trip.id,
+    cached_at: new Date().toISOString(),
+    trip: JSON.parse(JSON.stringify(trip)),
+    stops: JSON.parse(JSON.stringify(stops)),
+    customers: custs,
+    products: JSON.parse(JSON.stringify(prods))
+  };
+
+  OutboxDB.cacheTrip(cacheData);
+  return cacheData;
+}
+
+async function onlineFirstWrite(action, endpoint, payload, options) {
+  options = options || {};
+  var idemKey = (payload && (payload.p_idempotency_key || payload.idempotency_key)) ||
+    ('idem_' + action + '_' + (options.refId || options.tripId || 'req') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+
+  if (payload) {
+    payload.p_idempotency_key = idemKey;
+    payload.idempotency_key = idemKey;
+  }
+
+  var provReceipt = options.provisionalReceipt;
+  if (action === 'deliver_stop' && !provReceipt) {
+    provReceipt = 'PROV-' + (options.tripId || 'DEL') + '-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+    if (payload) {
+      payload.p_provisional_id = provReceipt;
+    }
+  }
+
+  var isOffline = (typeof navigator !== 'undefined' && navigator.onLine === false);
+
+  if (!isOffline) {
+    try {
+      var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var timeoutId = controller ? setTimeout(function() { controller.abort(); }, 5000) : null;
+      var sess = getSession();
+      var headers = { 'content-type': 'application/json' };
+      if (sess && sess.token) {
+        headers['authorization'] = 'Bearer ' + sess.token;
+      }
+
+      var res = await fetch(endpoint, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(payload),
+        signal: controller ? controller.signal : undefined
+      });
+
+      if (timeoutId) clearTimeout(timeoutId);
+
+      var resData = await res.json().catch(function() { return {}; });
+
+      if (res.status >= 400 && res.status < 500) {
+        var err = new Error(resData.message || resData.error || ('Business error ' + res.status));
+        err.status = res.status;
+        err.data = resData;
+        throw err;
+      }
+
+      if (!res.ok) {
+        throw new Error('Server returned ' + res.status);
+      }
+
+      return {
+        ok: true,
+        online: true,
+        data: resData,
+        official_invoice_no: resData.official_invoice_no || resData.bill_id,
+        provisional_receipt: provReceipt
+      };
+    } catch (netOrTimeoutErr) {
+      if (netOrTimeoutErr.status && netOrTimeoutErr.status >= 400 && netOrTimeoutErr.status < 500) {
+        throw netOrTimeoutErr;
+      }
+      console.warn('onlineFirstWrite fetch failed on ' + action + ', queuing in Outbox:', netOrTimeoutErr.message || netOrTimeoutErr);
+    }
+  }
+
+  var outboxItem = {
+    id: idemKey,
+    idempotency_key: idemKey,
+    action: action,
+    endpoint: endpoint,
+    trip_id: options.tripId || '',
+    stop_id: options.stopId || '',
+    payload: payload,
+    provisional_receipt: provReceipt || null,
+    status: 'pending',
+    created_at: new Date().toISOString(),
+    attempts: 0,
+    last_error: null
+  };
+
+  await OutboxDB.enqueue(outboxItem);
+
+  return {
+    ok: true,
+    online: false,
+    queued: true,
+    status: 'pending',
+    idempotency_key: idemKey,
+    provisional_receipt: provReceipt
+  };
+}
+
+var IS_SYNCING = false;
+async function syncOutbox() {
+  if (IS_SYNCING) return;
+  IS_SYNCING = true;
+  try {
+    var pending = await OutboxDB.getAllPending();
+    if (!pending || !pending.length) {
+      IS_SYNCING = false;
+      return;
+    }
+
+    // Sort in per-trip FIFO order: group by trip_id, then sort by created_at
+    pending.sort(function(a, b) {
+      if (a.trip_id !== b.trip_id) {
+        return a.trip_id.localeCompare(b.trip_id);
+      }
+      return (new Date(a.created_at || 0)) - (new Date(b.created_at || 0));
+    });
+
+    var sess = getSession();
+    if (!sess || !sess.token) {
+      console.warn('Sync paused: No active auth session. Will resume upon login.');
+      IS_SYNCING = false;
+      return;
+    }
+
+    for (var i = 0; i < pending.length; i++) {
+      var item = pending[i];
+      try {
+        var headers = {
+          'content-type': 'application/json',
+          'authorization': 'Bearer ' + sess.token
+        };
+
+        var res = await fetch(item.endpoint, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(item.payload)
+        });
+
+        if (res.status === 401) {
+          console.warn('Sync paused: Session expired (401). Leaving queue intact for re-login.');
+          break;
+        }
+
+        var resData = await res.json().catch(function() { return {}; });
+
+        if (res.status >= 400 && res.status < 500) {
+          console.warn('Server rejected outbox item ' + item.id + ':', resData);
+          await OutboxDB.remove(item.id);
+          await OutboxDB.addAttention({
+            id: item.id,
+            action: item.action,
+            trip_id: item.trip_id,
+            stop_id: item.stop_id,
+            provisional_receipt: item.provisional_receipt,
+            error_code: resData.error || ('http_' + res.status),
+            reason: resData.message || resData.error || ('Rejected by server (HTTP ' + res.status + ')'),
+            timestamp: new Date().toISOString(),
+            payload: item.payload
+          });
+          continue;
+        }
+
+        if (res.ok) {
+          if (item.action === 'deliver_stop') {
+            var officialNo = resData.official_invoice_no || resData.bill_id;
+            if (officialNo && item.provisional_receipt) {
+              replaceProvisionalReceipt(item.provisional_receipt, officialNo, item.trip_id, item.stop_id);
+            }
+          }
+          await OutboxDB.remove(item.id);
+        }
+      } catch (netErr) {
+        console.warn('Network error during outbox sync on ' + item.id + ':', netErr);
+        item.attempts = (item.attempts || 0) + 1;
+        item.last_error = netErr.message;
+        await OutboxDB.update(item);
+        break;
+      }
+    }
+  } finally {
+    IS_SYNCING = false;
+  }
+}
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('online', function() {
+    toast('Network restored! Syncing offline outbox...');
+    syncOutbox().then(function() {
+      if (location.hash === '#my-route' || location.hash === '#dashboard') {
+        render();
+      }
+    });
+  });
+}
+
 /* ---------- (1) Employee "My Route" (#my-route) ---------- */
 function myRoutePage() {
   var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1';
@@ -3190,6 +3775,46 @@ function myRoutePage() {
   }
 
   var html = head('My Delivery Route / నా రూట్') + tripSelector;
+
+  // Needs Attention Banner (if server rejected any offline transactions)
+  var attentionList = (OutboxDB && OutboxDB.state && OutboxDB.state.attentionItems) || [];
+  if (attentionList.length > 0) {
+    html += '<div class="card" style="margin-bottom:14px;padding:14px;border-left:4px solid var(--red);background:#fff5f5;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+        '<h3 style="margin:0;color:var(--red);font-size:16px;">⚠️ Needs Attention (' + attentionList.length + ' Items)</h3>' +
+      '</div>' +
+      '<p class="pdesc" style="margin:0 0 10px;color:var(--fg);font-size:13px;">The following offline transactions were rejected by the server and require attention:</p>' +
+      '<div style="display:grid;gap:8px;">' +
+      attentionList.map(function(att) {
+        var custNameStr = (att.payload && att.payload.p_customer_id) ? custName(att.payload.p_customer_id) : (att.trip_id || 'Action');
+        return '<div style="background:#fff;border:1px solid #fecaca;border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+          '<div>' +
+            '<div style="font-weight:700;font-size:14px;color:#991b1b;">' + esc(att.action) + ' · ' + esc(custNameStr) + (att.provisional_receipt ? ' (' + esc(att.provisional_receipt) + ')' : '') + '</div>' +
+            '<div style="font-size:12px;color:#b91c1c;margin-top:2px;">Reason: <b>' + esc(att.reason) + '</b></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px;">' +
+            '<button type="button" class="btn sm" data-route-act="retry-attention" data-att-id="' + esc(att.id) + '">Retry 🔄</button>' +
+            '<button type="button" class="btn alt sm" data-route-act="dismiss-attention" data-att-id="' + esc(att.id) + '">Dismiss ✕</button>' +
+          '</div>' +
+        '</div>';
+      }).join('') +
+      '</div>' +
+    '</div>';
+  }
+
+  // Pending Outbox Sync Banner
+  var pendingList = (OutboxDB && OutboxDB.state && OutboxDB.state.pendingItems) || [];
+  if (pendingList.length > 0) {
+    html += '<div class="card" style="margin-bottom:14px;padding:12px 16px;border-left:4px solid var(--amber);background:#fffdf0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+      '<div>' +
+        '<b style="color:#b45309;font-size:15px;">⏳ ' + pendingList.length + ' Offline Transactions Pending Sync</b>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px;">Saved locally in IndexedDB Outbox. Will auto-sync when network is restored.</div>' +
+      '</div>' +
+      '<div>' +
+        '<button type="button" class="btn sm" data-route-act="sync-outbox">Sync Now 🔄</button>' +
+      '</div>' +
+    '</div>';
+  }
 
   // Header Trip Card
   html += '<div class="card" style="margin-bottom:14px;padding:16px;">' +
@@ -3262,13 +3887,20 @@ function myRoutePage() {
         return num(it.cases || it.quantity_cases || 1) + ' × ' + esc(it.product_name);
       }).join(', ') || (num(s.planned_cases || 0) + ' cases');
 
-      var stopBadge = s.status === 'delivered'
-        ? '<span class="pill p-green">Delivered 📦</span>'
-        : s.status === 'arrived'
-        ? '<span class="pill p-blue">Arrived at Location 🏁</span>'
-        : s.status === 'skipped'
-        ? '<span class="pill">Skipped (' + esc(s.skip_reason || '') + ')</span>'
-        : '<span class="pill p-amber">Pending Stop</span>';
+      var stopBadge = '';
+      if (s.status === 'delivered') {
+        if (s.provisional_receipt) {
+          stopBadge = '<span class="pill p-amber">Delivered (Pending Sync) ⏳</span>';
+        } else {
+          stopBadge = '<span class="pill p-green">Delivered 📦</span>';
+        }
+      } else if (s.status === 'arrived') {
+        stopBadge = '<span class="pill p-blue">Arrived at Location 🏁</span>';
+      } else if (s.status === 'skipped') {
+        stopBadge = '<span class="pill">Skipped (' + esc(s.skip_reason || '') + ')</span>';
+      } else {
+        stopBadge = '<span class="pill p-amber">Pending Stop</span>';
+      }
 
       var navBtn = '';
       if (cust.lat && cust.lng) {
@@ -3287,8 +3919,15 @@ function myRoutePage() {
                      '<button type="button" class="btn alt sm" data-route-act="skip-modal" data-stop-id="' + esc(s.id) + '">Skip</button>';
       } else if (s.status === 'delivered') {
         var delRec = (S.deliveries || []).find(function(d) { return d.stop_id === s.id; });
+        var invoiceStr = s.official_invoice_no || (delRec && delRec.official_invoice_no) || (delRec && delRec.bill_id) || '';
+        var isProv = s.provisional_receipt || (delRec && delRec.provisional_id);
+        var billLabel = isProv
+          ? '<span style="color:#b45309;font-weight:700;">Provisional Receipt: ' + esc(isProv) + ' (Pending Sync ⏳)</span>'
+          : '<span style="color:var(--green);font-weight:700;">Official Bill #' + esc(invoiceStr) + ' ✓</span>';
+
         actionBtns = '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' +
-          (delRec ? 'Bill #' + esc(delRec.bill_id) + ' · Total: ' + inr(delRec.amount || 0) + ' · Paid: ' + inr(delRec.paid || 0) + ' (' + esc(delRec.payment_mode || 'Cash') + ') · Cans returned: ' + num(delRec.empty_cans_returned || 0) : 'Completed') +
+          billLabel +
+          (delRec ? ' · Total: ' + inr(delRec.amount || 0) + ' · Paid: ' + inr(delRec.paid || 0) + ' (' + esc(delRec.payment_mode || 'Cash') + ')' + (delRec.empty_cans_returned ? ' · Cans: ' + num(delRec.empty_cans_returned) : '') : '') +
           '</div>' +
           '<button type="button" class="btn alt sm" data-route-act="log-order-modal" data-stop-id="' + esc(s.id) + '">Log Future Order 📝</button>';
       }
@@ -4026,11 +4665,20 @@ document.addEventListener('click', function(e) {
       return;
     }
     if (trip) {
+      cacheTripAtStart(trip);
       trip.status = 'on_route';
       trip.start_odometer = startKm;
       trip.loaded_at = new Date().toISOString();
       save();
-      toast('Trip started! Drive safely.');
+      onlineFirstWrite('confirm_loading', '/api/rpc/confirm_loading', {
+        p_trip_id: trip.id,
+        p_start_odometer: startKm
+      }, { tripId: trip.id }).then(function(res) {
+        if (res.online) toast('Trip started & verified online! Drive safely.');
+        else toast('Trip started! Action queued in Outbox (pending sync).');
+      }).catch(function(err) {
+        toast('Trip start error: ' + err.message);
+      });
       render();
     }
     return;
@@ -4041,34 +4689,37 @@ document.addEventListener('click', function(e) {
     if (!stop) return;
     var cust = (S.customers || []).find(function(c) { return c.id === stop.customer_id; });
 
+    var doArrive = function(lat, lng, dist) {
+      stop.status = 'arrived';
+      stop.arrived_at = new Date().toISOString();
+      stop.arrival_lat = lat;
+      stop.arrival_lng = lng;
+      stop.distance_meters = dist;
+      save();
+      onlineFirstWrite('arrive_at_stop', '/api/rpc/arrive_at_stop', {
+        p_trip_id: stop.trip_id,
+        p_customer_id: stop.customer_id,
+        p_lat: lat,
+        p_lng: lng,
+        p_distance_meters: dist
+      }, { tripId: stop.trip_id, stopId: stop.id });
+      toast('Arrived at stop! ' + (dist != null ? '(' + dist + ' m away)' : ''));
+      render();
+    };
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         function(pos) {
           var dist = (cust && cust.lat && cust.lng) ? haversineDist(pos.coords.latitude, pos.coords.longitude, cust.lat, cust.lng) : null;
-          stop.status = 'arrived';
-          stop.arrived_at = new Date().toISOString();
-          stop.arrival_lat = pos.coords.latitude;
-          stop.arrival_lng = pos.coords.longitude;
-          stop.distance_meters = dist;
-          save();
-          toast('Arrived at stop! ' + (dist != null ? '(' + dist + ' m away)' : ''));
-          render();
+          doArrive(pos.coords.latitude, pos.coords.longitude, dist);
         },
         function() {
-          stop.status = 'arrived';
-          stop.arrived_at = new Date().toISOString();
-          save();
-          toast('Arrived at stop');
-          render();
+          doArrive(null, null, null);
         },
         { enableHighAccuracy: true, timeout: 6000 }
       );
     } else {
-      stop.status = 'arrived';
-      stop.arrived_at = new Date().toISOString();
-      save();
-      toast('Arrived at stop');
-      render();
+      doArrive(null, null, null);
     }
     return;
   }
@@ -4097,10 +4748,40 @@ document.addEventListener('click', function(e) {
       trip.end_odometer = endKm;
       trip.closed_at = new Date().toISOString();
       save();
+      onlineFirstWrite('close_trip', '/api/rpc/close_trip', {
+        p_trip_id: trip.id,
+        p_end_odometer: endKm
+      }, { tripId: trip.id });
       toast('Trip completed! Proceed to Day Close & Cash Settlement.');
       location.hash = '#day-close';
       render();
     }
+    return;
+  }
+  if (routeAct === 'sync-outbox') {
+    syncOutbox().then(function() {
+      toast('Outbox sync complete!');
+      render();
+    }).catch(function(err) {
+      toast('Sync error: ' + (err.message || err));
+      render();
+    });
+    return;
+  }
+  if (routeAct === 'retry-attention') {
+    var attId = t.dataset.attId;
+    OutboxDB.retryAttention(attId).then(function() {
+      toast('Item moved back to outbox for retry.');
+      syncOutbox().then(render);
+    });
+    return;
+  }
+  if (routeAct === 'dismiss-attention') {
+    var attId = t.dataset.attId;
+    OutboxDB.removeAttention(attId).then(function() {
+      toast('Item dismissed from attention list.');
+      render();
+    });
     return;
   }
 
@@ -4267,38 +4948,12 @@ document.addEventListener('submit', function(e) {
     var emptyCans = $('#del-empty-cans') ? +$('#del-empty-cans').value : 0;
     var notes = $('#del-notes') ? $('#del-notes').value.trim() : '';
 
-    var deliveryPayload = {
-      stop_id: stopId,
-      trip_id: tripId,
-      customer_id: cust ? cust.id : '',
-      items: lineItems,
-      total: totalAmt,
-      paid: paidAmt,
-      payment_mode: payMode,
-      empty_cans_returned: emptyCans,
-      notes: notes,
-      entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
-    };
+    var provId = 'PROV-' + (tripId || 'DEL') + '-' + Math.random().toString(36).substring(2, 7).toUpperCase();
 
-    // Offline / outbox fallback per Decision 3
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      var provId = queueOfflineDelivery(tripId, deliveryPayload);
-      if (stop) {
-        stop.status = 'delivered';
-        stop.completed_at = new Date().toISOString();
-        stop.provisional_receipt = provId;
-      }
-      save();
-      closeModal();
-      toast('Saved offline to Outbox! Provisional Receipt: ' + provId + '. Will sync when online.');
-      render();
-      return;
-    }
-
-    // Online delivery issuance
-    var billId = nid('B', S.bills);
+    // Create provisional bill locally
     S.bills.push({
-      id: billId,
+      id: provId,
+      provisional_id: provId,
       date: today(),
       cust: cust ? cust.id : '',
       items: lineItems,
@@ -4317,7 +4972,7 @@ document.addEventListener('submit', function(e) {
         cust: cust ? cust.id : '',
         amount: paidAmt,
         mode: payMode,
-        bill: billId
+        bill: provId
       });
     }
 
@@ -4326,7 +4981,8 @@ document.addEventListener('submit', function(e) {
       id: delId,
       stop_id: stopId,
       trip_id: tripId,
-      bill_id: billId,
+      bill_id: provId,
+      provisional_id: provId,
       delivered_at: new Date().toISOString(),
       delivered_cases: totalCases,
       amount: totalAmt,
@@ -4339,6 +4995,7 @@ document.addEventListener('submit', function(e) {
     if (stop) {
       stop.status = 'delivered';
       stop.completed_at = new Date().toISOString();
+      stop.provisional_receipt = provId;
       if (stop.order_id) {
         var ord = (S.orders || []).find(function(o) { return o.id === stop.order_id; });
         if (ord) ord.status = 'delivered';
@@ -4347,8 +5004,39 @@ document.addEventListener('submit', function(e) {
 
     save();
     closeModal();
-    toast('Delivery recorded! Bill #' + billId + ' issued (' + inr(totalAmt) + ').');
     render();
+
+    var deliveryPayload = {
+      p_trip_id: tripId,
+      p_stop_id: stopId,
+      p_customer_id: cust ? cust.id : '',
+      p_items: lineItems,
+      p_total: totalAmt,
+      p_amount_received: paidAmt,
+      p_payment_mode: payMode,
+      p_empty_cans_returned: emptyCans,
+      p_notes: notes,
+      p_provisional_id: provId,
+      p_offline: (typeof navigator !== 'undefined' && navigator.onLine === false)
+    };
+
+    onlineFirstWrite('deliver_stop', '/api/rpc/deliver_stop', deliveryPayload, {
+      tripId: tripId,
+      stopId: stopId,
+      provisionalReceipt: provId
+    }).then(function(res) {
+      if (res.online && res.official_invoice_no) {
+        replaceProvisionalReceipt(provId, res.official_invoice_no, tripId, stopId);
+        toast('Delivery recorded! Official Bill #' + res.official_invoice_no + ' issued (' + inr(totalAmt) + ').');
+      } else {
+        toast('Delivery saved offline to Outbox! Provisional Receipt: ' + provId + '. Pending sync.');
+      }
+      render();
+    }).catch(function(err) {
+      toast('Delivery error: ' + (err.message || err));
+      render();
+    });
+
     return;
   }
 
@@ -4365,6 +5053,13 @@ document.addEventListener('submit', function(e) {
       stop.completed_at = new Date().toISOString();
       save();
       closeModal();
+      onlineFirstWrite('skip_stop', '/api/rpc/skip_stop', {
+        p_trip_id: stop.trip_id,
+        p_stop_id: stop.id,
+        p_customer_id: stop.customer_id,
+        p_reason: reason,
+        p_note: note
+      }, { tripId: stop.trip_id, stopId: stop.id });
       toast('Stop marked as skipped');
       render();
     }
@@ -4373,6 +5068,8 @@ document.addEventListener('submit', function(e) {
 
   if (f.id === 'log-order-form') {
     e.preventDefault();
+    var stopId = f.dataset.stopId;
+    var stop = (S.tripStops || []).find(function(s) { return s.id === stopId; });
     var custId = f.dataset.custId;
     var cust = (S.customers || []).find(function(c) { return c.id === custId; });
     var reqDate = $('#lo-req-date') ? $('#lo-req-date').value : tomorrow();
@@ -4404,6 +5101,19 @@ document.addEventListener('submit', function(e) {
 
     save();
     closeModal();
+    onlineFirstWrite('log_order_from_stop', '/api/rpc/log_order_from_stop', {
+      p_trip_id: stop ? stop.trip_id : '',
+      p_stop_id: stopId,
+      p_customer_id: custId,
+      p_order_no: ordNo,
+      p_requested_date: reqDate,
+      p_product_name: sku,
+      p_cases: cases,
+      p_bottles: btl,
+      p_unit_rate: rate,
+      p_total_amount: tot,
+      p_notes: notes
+    }, { tripId: stop ? stop.trip_id : '', stopId: stopId });
     toast('Future order booked for ' + (cust ? cust.name : 'Customer') + ' on ' + reqDate + '!');
     return;
   }
@@ -4585,6 +5295,7 @@ window.num = num;
 window.getSession = getSession;
 window.setSession = setSession;
 window.submitLogin = submitLogin;
+window.handleLogout = handleLogout;
 window.handleInactivityLogout = handleInactivityLogout;
 window.resetInactivityTimer = resetInactivityTimer;
 window.showAddUserModal = showAddUserModal;
@@ -4608,6 +5319,11 @@ window.setCurrentRole=setCurrentRole;
 window.getCurrentRole=getCurrentRole;
 window.setCurrentProfile=setCurrentProfile;
 window.getCurrentProfile=getCurrentProfile;
+window.OutboxDB = OutboxDB;
+window.onlineFirstWrite = onlineFirstWrite;
+window.syncOutbox = syncOutbox;
+window.cacheTripAtStart = cacheTripAtStart;
+window.replaceProvisionalReceipt = replaceProvisionalReceipt;
 window.priceVarianceReport=priceVarianceReport;
 window.S=S;
 })();
