@@ -4,6 +4,7 @@
   "description": "Larven Enterprises BMS (SR PLUS+)",
   "private": true,
   "scripts": {
+    "test": "node tests/test_smoke.mjs",
     "dev": "wrangler pages dev public --kv KV --port 8788 --ip 127.0.0.1"
   }
 }
