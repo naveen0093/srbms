@@ -1345,4 +1345,240 @@ assert.ok(readmeText.includes('test-plan.md'), 'README.md documents test-plan.md
 
 console.log('  ✓ Attendance & HR migration, Storage Signed URLs, Aadhaar Masking, IndexedDB Session, Role Matrix & Docs verified (100% compliant)');
 
+// ============================================================================
+// 18. Validating Unified Role-Based Access Control (RBAC), PERMS, Dashboards & Auth
+// ============================================================================
+console.log('18. Validating Unified Authoritative Permissions Map (PERMS), Role Dashboards & Guards...');
+
+const { PERMS, canPage, canAct, setCurrentRole, getCurrentRole, setCurrentProfile, getCurrentProfile, setSession, getSession, ownerDashboard, managerDashboard, employeeDashboard, adminDashboard } = context.window;
+
+// A. Fail Closed Check
+setCurrentRole(null);
+setCurrentProfile(null);
+assert.strictEqual(canPage('dashboard'), false, 'canPage fails closed when CURRENT_ROLE is null');
+assert.strictEqual(canAct('create_bill'), false, 'canAct fails closed when CURRENT_ROLE is null');
+assert.strictEqual(canPage('nonexistent_page'), false, 'unknown page is denied');
+assert.strictEqual(canAct('hack_system'), false, 'unknown action is denied');
+
+// B. PERMS Map Completeness
+assert.ok(PERMS && typeof PERMS === 'object', 'PERMS map must exist');
+assert.ok(PERMS.pages && typeof PERMS.pages === 'object', 'PERMS.pages must exist');
+assert.ok(PERMS.actions && typeof PERMS.actions === 'object', 'PERMS.actions must exist');
+
+// Verify all 42 NAV routes are in PERMS.pages
+const navPageIds = [];
+context.window.NAV.forEach(g => g[1].forEach(i => navPageIds.push(i[0])));
+assert.strictEqual(navPageIds.length, 42, 'NAV must contain 42 total routes');
+navPageIds.forEach(id => {
+  assert.ok(id in PERMS.pages, `Page '${id}' from NAV must be mapped in PERMS.pages`);
+});
+
+// C. Verify Required Actions exist
+const requiredActions = [
+  'create_bill', 'cancel_bill', 'reverse_payment', 'approve_diesel',
+  'restore_backup', 'edit_settings', 'manage_users', 'view_identities', 'view_salary'
+];
+requiredActions.forEach(act => {
+  assert.ok(act in PERMS.actions, `Action '${act}' must be mapped in PERMS.actions`);
+});
+
+// D. Role Permission Matrix Tests
+// 1. Employee
+setCurrentRole('employee');
+setCurrentProfile({ id: 'emp-1', full_name: 'Driver 1', role: 'employee', duties: ['delivery'] });
+assert.strictEqual(canPage('dashboard'), true, 'employee can access dashboard');
+assert.strictEqual(canPage('my-route'), true, 'employee can access my-route');
+assert.strictEqual(canPage('day-close'), true, 'employee can access day-close');
+assert.strictEqual(canPage('new-bill'), false, 'employee cannot access new-bill');
+assert.strictEqual(canPage('bills'), false, 'employee cannot access bills');
+assert.strictEqual(canPage('customers'), false, 'employee cannot access customers');
+assert.strictEqual(canPage('payments'), false, 'employee cannot access payments');
+assert.strictEqual(canPage('outstanding'), false, 'employee cannot access outstanding');
+assert.strictEqual(canPage('backup'), false, 'employee cannot access backup');
+assert.strictEqual(canPage('settings'), false, 'employee cannot access settings');
+assert.strictEqual(canPage('users'), false, 'employee cannot access users');
+assert.strictEqual(canPage('cafe-sales'), false, 'employee cannot access cafe-sales');
+assert.strictEqual(canAct('create_bill'), false, 'employee cannot create_bill');
+assert.strictEqual(canAct('cancel_bill'), false, 'employee cannot cancel_bill');
+assert.strictEqual(canAct('reverse_payment'), false, 'employee cannot reverse_payment');
+assert.strictEqual(canAct('approve_diesel'), false, 'employee cannot approve_diesel');
+assert.strictEqual(canAct('restore_backup'), false, 'employee cannot restore_backup');
+assert.strictEqual(canAct('edit_settings'), false, 'employee cannot edit_settings');
+assert.strictEqual(canAct('view_identities'), false, 'employee cannot view_identities');
+assert.strictEqual(canAct('view_salary'), false, 'employee cannot view_salary');
+
+// Duty Tag Staff screen checks
+setCurrentProfile({ id: 'emp-prod', full_name: 'Prod Staff', role: 'employee', duties: ['production'] });
+assert.strictEqual(canPage('production-plan'), true, 'production-tagged employee can access production-plan');
+assert.strictEqual(canPage('production'), true, 'production-tagged employee can access production');
+assert.strictEqual(canPage('stock-overview'), false, 'production employee cannot access godown stock-overview');
+assert.strictEqual(canPage('current-stock'), false, 'production employee cannot access godown current-stock');
+
+setCurrentProfile({ id: 'emp-godown', full_name: 'Godown Staff', role: 'employee', duties: ['godown'] });
+assert.strictEqual(canPage('stock-overview'), true, 'godown-tagged employee can access stock-overview');
+assert.strictEqual(canPage('fg-transfer'), true, 'godown-tagged employee can access fg-transfer');
+assert.strictEqual(canPage('fg-dispatch'), true, 'godown-tagged employee can access fg-dispatch');
+assert.strictEqual(canPage('current-stock'), true, 'godown-tagged employee can access current-stock');
+assert.strictEqual(canPage('production-plan'), false, 'godown employee cannot access production-plan');
+
+// 2. Manager
+setCurrentRole('manager');
+setCurrentProfile({ id: 'mgr-1', full_name: 'Manager', role: 'manager' });
+assert.strictEqual(canPage('dashboard'), true, 'manager can access dashboard');
+assert.strictEqual(canPage('new-bill'), true, 'manager can access new-bill');
+assert.strictEqual(canPage('bills'), true, 'manager can access bills');
+assert.strictEqual(canPage('customers'), true, 'manager can access customers');
+assert.strictEqual(canPage('payments'), true, 'manager can access payments');
+assert.strictEqual(canPage('outstanding'), true, 'manager can access outstanding');
+assert.strictEqual(canPage('day-close'), true, 'manager can access day-close');
+assert.strictEqual(canPage('diesel-approvals'), true, 'manager can access diesel-approvals');
+assert.strictEqual(canPage('employees'), true, 'manager can access employees list');
+assert.strictEqual(canPage('advances'), false, 'manager CANNOT access advances/salary');
+assert.strictEqual(canPage('backup'), false, 'manager CANNOT access backup');
+assert.strictEqual(canPage('settings'), false, 'manager CANNOT access business settings');
+assert.strictEqual(canPage('users'), true, 'manager can access users');
+assert.strictEqual(canPage('cafe-sales'), true, 'manager can access cafe');
+assert.strictEqual(canAct('create_bill'), true, 'manager can create_bill');
+assert.strictEqual(canAct('cancel_bill'), true, 'manager can cancel_bill');
+assert.strictEqual(canAct('reverse_payment'), true, 'manager can reverse_payment');
+assert.strictEqual(canAct('approve_diesel'), true, 'manager can approve_diesel');
+assert.strictEqual(canAct('restore_backup'), false, 'manager CANNOT restore_backup');
+assert.strictEqual(canAct('edit_settings'), false, 'manager CANNOT edit_settings');
+assert.strictEqual(canAct('view_identities'), false, 'manager CANNOT view_identities');
+assert.strictEqual(canAct('view_salary'), false, 'manager CANNOT view_salary');
+
+// 3. Owner
+setCurrentRole('owner');
+setCurrentProfile({ id: 'own-1', full_name: 'Muni Prasad', role: 'owner' });
+navPageIds.forEach(id => {
+  assert.strictEqual(canPage(id), true, `owner must have access to page '${id}'`);
+});
+requiredActions.forEach(act => {
+  assert.strictEqual(canAct(act), true, `owner must be authorized to perform action '${act}'`);
+});
+
+// 4. Admin
+setCurrentRole('admin');
+setCurrentProfile({ id: 'adm-1', full_name: 'Admin Developer', role: 'admin' });
+assert.strictEqual(canPage('dashboard'), true, 'admin can access dashboard');
+assert.strictEqual(canPage('bills'), true, 'admin can access bills (read-only)');
+assert.strictEqual(canPage('customers'), true, 'admin can access customers (read-only)');
+assert.strictEqual(canPage('day-close'), false, 'admin CANNOT access day-close');
+assert.strictEqual(canPage('advances'), false, 'admin CANNOT access advances');
+assert.strictEqual(canPage('cafe-sales'), false, 'admin CANNOT access cafe');
+assert.strictEqual(canPage('backup'), false, 'admin CANNOT access backup');
+assert.strictEqual(canPage('settings'), true, 'admin can access settings (technical audit)');
+assert.strictEqual(canAct('create_bill'), false, 'admin CANNOT create_bill (read-only)');
+assert.strictEqual(canAct('cancel_bill'), false, 'admin CANNOT cancel_bill');
+assert.strictEqual(canAct('reverse_payment'), false, 'admin CANNOT reverse_payment');
+assert.strictEqual(canAct('approve_diesel'), false, 'admin CANNOT approve_diesel');
+assert.strictEqual(canAct('restore_backup'), false, 'admin CANNOT restore_backup');
+assert.strictEqual(canAct('edit_settings'), false, 'admin CANNOT edit_settings');
+assert.strictEqual(canAct('manage_users'), true, 'admin can manage_users');
+assert.strictEqual(canAct('view_identities'), false, 'admin CANNOT view_identities');
+assert.strictEqual(canAct('view_salary'), false, 'admin CANNOT view_salary');
+
+// E. Role-Aware Dashboard Verification
+// 1. Employee Dashboard: "My Day", Zero revenue figures
+setCurrentRole('employee');
+setCurrentProfile({ id: 'emp-1', full_name: 'Driver 1', role: 'employee', duties: ['delivery'] });
+const empHtml = employeeDashboard();
+assert.ok(empHtml.includes('My Day'), 'employee dashboard contains "My Day" title');
+assert.ok(empHtml.includes('My Route Status'), 'employee dashboard contains route status');
+assert.ok(empHtml.includes('My Attendance'), 'employee dashboard contains attendance');
+assert.ok(!empHtml.includes('Total Sales'), 'employee dashboard has ZERO revenue numbers (no Total Sales)');
+assert.ok(!empHtml.includes('Total Collections'), 'employee dashboard has ZERO revenue numbers (no Total Collections)');
+assert.ok(!empHtml.includes('Total Outstanding'), 'employee dashboard has ZERO revenue numbers (no Total Outstanding)');
+
+// 2. Manager Dashboard: Operations summary, no revenue-sensitive owner widgets
+setCurrentRole('manager');
+setCurrentProfile({ id: 'mgr-1', full_name: 'Manager', role: 'manager' });
+const mgrHtml = managerDashboard();
+assert.ok(mgrHtml.includes('Operations Summary'), 'manager dashboard contains Operations Summary');
+assert.ok(mgrHtml.includes('Dispatched Today'), 'manager dashboard contains dispatch volumes');
+assert.ok(!mgrHtml.includes('Total Sales'), 'manager dashboard has NO revenue-sensitive Total Sales widget');
+assert.ok(!mgrHtml.includes('Total Collections'), 'manager dashboard has NO revenue-sensitive Total Collections widget');
+assert.ok(!mgrHtml.includes('Total Outstanding'), 'manager dashboard has NO revenue-sensitive Total Outstanding widget');
+
+// 3. Owner Dashboard: Full business overview
+setCurrentRole('owner');
+setCurrentProfile({ id: 'own-1', full_name: 'Muni Prasad', role: 'owner' });
+const ownHtml = ownerDashboard();
+assert.ok(ownHtml.includes('Business Summary'), 'owner dashboard contains Business Summary');
+assert.ok(ownHtml.includes('Total Sales'), 'owner dashboard contains Total Sales');
+assert.ok(ownHtml.includes('Total Collections'), 'owner dashboard contains Total Collections');
+assert.ok(ownHtml.includes('Total Outstanding'), 'owner dashboard contains Total Outstanding');
+
+// 4. Admin Dashboard: Technical audit
+setCurrentRole('admin');
+setCurrentProfile({ id: 'adm-1', full_name: 'Admin', role: 'admin' });
+const admHtml = adminDashboard();
+assert.ok(admHtml.includes('System Administration'), 'admin dashboard contains System Administration');
+assert.ok(admHtml.includes('User Accounts & Auth'), 'admin dashboard contains auth overview');
+
+// F. Restricted Action & UI Guards Verification
+// 1. Bills table action buttons (admin read-only vs manager/owner actionable)
+context.window.S.bills = [{ id: 'B-TEST', date: '2026-11-20', cust: 'C1', items: [{ p: '20 Ltr', q: 1, r: 40 }], total: 40, paid: 40, gst: false }];
+setCurrentRole('admin');
+const adminBillsHtml = context.window.PAGES.bills();
+assert.ok(adminBillsHtml.includes('View'), 'admin can view bills');
+assert.ok(!adminBillsHtml.includes('data-nb="edit"'), 'admin cannot edit bills');
+assert.ok(!adminBillsHtml.includes('data-billact="cancel"'), 'admin cannot cancel bills');
+assert.ok(!adminBillsHtml.includes('data-billact="delete"'), 'admin cannot delete bills');
+assert.ok(!adminBillsHtml.includes('+ New Bill'), 'admin bills page hides "+ New Bill" link');
+
+setCurrentRole('manager');
+const mgrBillsHtml = context.window.PAGES.bills();
+assert.ok(mgrBillsHtml.includes('data-nb="edit"'), 'manager can edit bills');
+assert.ok(mgrBillsHtml.includes('data-billact="cancel"'), 'manager can cancel bills');
+assert.ok(mgrBillsHtml.includes('+ New Bill'), 'manager bills page shows "+ New Bill" link');
+
+// 2. Employees table salary column (manager employees list: no salary vs owner full)
+context.window.S.employees = [{ id: 'M-1', name: 'Ramesh', role: 'Driver', phone: '9848011111', emergency: '9848022222', salary: 15000, joined: '2026-11-01' }];
+setCurrentRole('manager');
+const mgrEmpsHtml = context.window.PAGES.employees();
+assert.ok(!mgrEmpsHtml.includes('<th>Salary</th>'), 'manager employee list hides Salary column header');
+assert.ok(!mgrEmpsHtml.includes('₹15,000'), 'manager employee list hides salary values');
+
+setCurrentRole('owner');
+const ownEmpsHtml = context.window.PAGES.employees();
+assert.ok(ownEmpsHtml.includes('Salary'), 'owner employee list displays Salary column header');
+assert.ok(ownEmpsHtml.includes('15,000'), 'owner employee list displays employee salary');
+
+// 3. Backup & Restore (owner only; restore button disabled/refused for all others)
+setCurrentRole('manager');
+const mgrBackupHtml = context.window.PAGES.backup();
+assert.ok(mgrBackupHtml.includes('Access denied'), 'manager blocked from backup page');
+
+setCurrentRole('owner');
+const ownBackupHtml = context.window.PAGES.backup();
+assert.ok(ownBackupHtml.includes('⇧ Restore from backup file'), 'owner has active restore from backup button');
+assert.strictEqual(canAct('restore_backup'), true, 'owner canAct restore_backup is true');
+
+setCurrentRole('admin');
+assert.strictEqual(canAct('restore_backup'), false, 'admin canAct restore_backup is false');
+
+// 4. Router Navigation Guard & Redirection
+setCurrentRole('employee');
+setCurrentProfile({ id: 'emp-1', full_name: 'Driver 1', role: 'employee', duties: ['delivery'] });
+context.window.location.hash = '#bills';
+let toasted = '';
+context.window.toast = (msg) => { toasted = msg; };
+context.window.render();
+assert.strictEqual(context.window.location.hash, '#my-route', 'denied route redirects employee to role home #my-route');
+assert.ok(toasted.includes('Access restricted'), 'toast notification displayed on denied navigation');
+
+setCurrentRole('manager');
+context.window.location.hash = '#backup';
+context.window.render();
+assert.strictEqual(context.window.location.hash, '#dashboard', 'denied route redirects manager to role home #dashboard');
+
+// G. Fail Closed Logout
+setSession(null);
+assert.strictEqual(getCurrentRole(), null, 'Logout resets CURRENT_ROLE to null');
+assert.strictEqual(getCurrentProfile(), null, 'Logout resets CURRENT_PROFILE to null');
+assert.strictEqual(canPage('dashboard'), false, 'Denied after logout');
+
+console.log('  ✓ Unified Authoritative Permissions Map (PERMS), Role Dashboards & Guards verified (100% compliant)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

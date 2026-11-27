@@ -71,11 +71,12 @@ function saveCafe() {
 /* ---------- Roles, Permissions & Hierarchy ---------- */
 var SYSTEM_ROLES = ['admin', 'owner', 'manager', 'employee'];
 var DUTY_TAGS = ['delivery', 'production', 'godown'];
-var CURRENT_ROLE = 'owner';
-var CURRENT_PROFILE = { id: 'owner-1', full_name: 'Muni Prasad', role: 'owner', employee_id: null };
+var CURRENT_ROLE = null;
+var CURRENT_PROFILE = null;
 
 function setCurrentRole(r) {
   CURRENT_ROLE = r;
+  AUTH_VERIFIED_ONCE = Boolean(r);
 }
 function getCurrentRole() {
   return CURRENT_ROLE;
@@ -97,6 +98,138 @@ try {
     set: function(p) { CURRENT_PROFILE = p; },
     configurable: true
   });
+} catch(e) {}
+
+/* ---------- Unified Authoritative Permissions Map (PERMS) ---------- */
+var PERMS = {
+  pages: {
+    // 1. Dashboard
+    'dashboard': ['admin', 'owner', 'manager', 'employee'],
+
+    // 2. Delivery & Route
+    'my-route': ['admin', 'owner', 'manager', 'employee'],
+
+    // 3. Billing & Customers
+    'new-bill': ['admin', 'owner', 'manager'],
+    'bills': ['admin', 'owner', 'manager'],
+    'customers': ['admin', 'owner', 'manager'],
+    'payments': ['admin', 'owner', 'manager'],
+    'outstanding': ['admin', 'owner', 'manager'],
+    'day-close': ['owner', 'manager', 'employee'], // Admin denied (✖)
+
+    // 4. Stock, Planning & Production (Tagged staff see only their matching screens)
+    'route-planner': ['admin', 'owner', 'manager'],
+    'production-plan': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('production') !== -1;
+    },
+    'stock-overview': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'production': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('production') !== -1;
+    },
+    'fg-transfer': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'fg-dispatch': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'fg-empload': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'stock-in': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'stock-out': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'current-stock': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'stock-history': function(role, prof) {
+      if (role === 'admin' || role === 'owner' || role === 'manager') return true;
+      return role === 'employee' && prof && Array.isArray(prof.duties) && prof.duties.indexOf('godown') !== -1;
+    },
+    'sales-visits': ['admin', 'owner', 'manager'],
+
+    // 5. Expenses, Fleet & Contacts
+    'diesel': ['admin', 'owner', 'manager'],
+    'diesel-approvals': ['admin', 'owner', 'manager'],
+    'expenses': ['admin', 'owner', 'manager'],
+    'vehicles': ['admin', 'owner', 'manager'],
+    'contacts': ['admin', 'owner', 'manager'],
+    'price-variance': ['admin', 'owner', 'manager'],
+
+    // 6. Employees & HR
+    'employees': ['owner', 'manager'], // Admin denied (✖)
+    'attendance': ['admin', 'owner', 'manager'],
+    'att-setup': ['admin', 'owner', 'manager'],
+    'timings': ['admin', 'owner', 'manager'],
+    'advances': ['owner'], // Manager denied (✖), Employee denied (✖), Admin denied (✖)
+
+    // 7. Café
+    'cafe-dashboard': ['owner', 'manager'],
+    'cafe-employees': ['owner', 'manager'],
+    'cafe-sales': ['owner', 'manager'],
+    'cafe-purchases': ['owner', 'manager'],
+    'cafe-expenses': ['owner', 'manager'],
+    'cafe-stock-in': ['owner', 'manager'],
+    'cafe-stock-out': ['owner', 'manager'],
+    'cafe-current-stock': ['owner', 'manager'],
+    'cafe-reports': ['owner', 'manager'],
+
+    // 8. Backup & Restore (Owner only)
+    'backup': ['owner'],
+
+    // 9. Settings & Users
+    'settings': ['admin', 'owner'], // Admin technical only; Owner full
+    'users': ['admin', 'owner', 'manager']
+  },
+
+  actions: {
+    'create_bill': ['owner', 'manager'],
+    'cancel_bill': ['owner', 'manager'],
+    'reverse_payment': ['owner', 'manager'],
+    'approve_diesel': ['owner', 'manager'],
+    'restore_backup': ['owner'],
+    'edit_settings': ['owner'],
+    'manage_users': ['admin', 'owner', 'manager'],
+    'view_identities': ['owner'],
+    'view_salary': ['owner'],
+    'view_revenue': ['admin', 'owner']
+  }
+};
+
+function canPage(id) {
+  if (!CURRENT_ROLE) return false;
+  var entry = PERMS.pages[id];
+  if (!entry) return false; // Fail closed: anything not listed is denied
+  if (typeof entry === 'function') return !!entry(CURRENT_ROLE, CURRENT_PROFILE);
+  return entry.indexOf(CURRENT_ROLE) !== -1;
+}
+
+function canAct(name) {
+  if (!CURRENT_ROLE) return false;
+  var key = String(name || '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  var entry = PERMS.actions[key];
+  if (!entry) return false; // Fail closed: anything not listed is denied
+  if (typeof entry === 'function') return !!entry(CURRENT_ROLE, CURRENT_PROFILE);
+  return entry.indexOf(CURRENT_ROLE) !== -1;
+}
+
+try {
+  window.PERMS = PERMS;
+  window.canPage = canPage;
+  window.canAct = canAct;
 } catch(e) {}
 
 function roleRank(r) {
@@ -290,7 +423,7 @@ function empName(id){var c=(S.employees||[]).filter(function(x){return x.id==id}
 function cafeActorName(){var el=document.querySelector('.user b');return (el&&el.textContent.trim())||(S.settings&&S.settings.owner)||'Unknown User'}
 function cafeItemNames(){var a=['Tea','Coffee','Milk','Boost','Horlicks','Lemon Tea','Irani Tea','Honey Tea','Ginger Tea','Green Tea','Badam Milk','Hot Milk','Cold Coffee','Other'];(S.cafePurchases||[]).forEach(function(x){if(x.item&&a.indexOf(x.item)<0)a.push(x.item)});(S.cafeStockMoves||[]).forEach(function(x){if(x.item&&a.indexOf(x.item)<0)a.push(x.item)});return a}
 
-function toast(m,undo){var t=$('#toast');t.textContent=m;toast.u=null;if(undo){var b=document.createElement('button');b.type='button';b.id='tundo';b.className='tundo';b.textContent='Undo';t.appendChild(b);toast.u=undo}t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){t.hidden=true;toast.u=null},undo?9000:2200)}
+function toast(m,undo){if(typeof window!=='undefined'){if(typeof window.__onToast==='function')try{window.__onToast(m)}catch(e){}if(typeof window.toast==='function'&&window.toast!==toast)try{window.toast(m,undo)}catch(e){}}var t=$('#toast');if(!t)return;t.textContent=m;toast.u=null;if(undo){var b=document.createElement('button');b.type='button';b.id='tundo';b.className='tundo';b.textContent='Undo';t.appendChild(b);toast.u=undo}t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){t.hidden=true;toast.u=null},undo?9000:2200)}
 function outstanding(id){return S.bills.filter(function(b){return !id||b.cust==id}).reduce(function(a,b){return a+b.total-b.paid},0)}
 function stockLevels(){var m={};S.stock.forEach(function(r){m[r.item]=(m[r.item]||0)+(r.type=='In'?r.qty:-r.qty)});return m}
  function cafeItemKey(v){return String(v||'').trim().toLocaleLowerCase().replace(/\s+/g,' ')}
@@ -316,18 +449,23 @@ var TITLES={'my-route':'My Delivery Route','route-planner':'Route Planner','prod
 function groupOf(id){for(var i=0;i<NAV.length;i++)for(var j=0;j<NAV[i][1].length;j++)if(NAV[i][1][j][0]==id)return NAV[i][0]||''}
 function buildNav(cur){
  var g0=groupOf(cur);if(cur!=LASTCUR&&g0)NAVOPEN[g0]=true;LASTCUR=cur;
- var h='';NAV.forEach(function(g){
-  var links=g[1].filter(function(i){
-    if (i[0] == 'price-variance' && CURRENT_ROLE == 'employee') return false;
-    if (i[0] == 'users' && CURRENT_ROLE == 'employee') return false;
-    if ((i[0] == 'route-planner' || i[0] == 'production-plan') && CURRENT_ROLE == 'employee') return false;
-    return true;
-  }).map(function(i){TITLES[i[0]]=i[1];return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+i[1]+'</a>'}).join('');
+ var h='';
+ NAV.forEach(function(g){
   if(g[0] == 'Cafe' && CURRENT_ROLE == 'employee') return;
+  var visibleItems = g[1].filter(function(i){ return canPage(i[0]); });
+  if (!visibleItems.length) return;
+  var links = visibleItems.map(function(i){
+    var label = i[1];
+    if (i[0] === 'dashboard' && CURRENT_ROLE === 'employee') label = 'My Day';
+    TITLES[i[0]] = label;
+    return '<a href="#'+i[0]+'" class="'+(i[0]==cur?'on':'')+'"'+(i[0]==cur?' aria-current="page"':'')+'>'+ic(i[2])+label+'</a>';
+  }).join('');
   if(!g[0]){h+=links;return}
   var open=!!NAVOPEN[g[0]];
-  h+='<button type="button" class="grp'+(g[0]==g0?' has':'')+'" data-grp="'+g[0]+'" aria-expanded="'+open+'">'+g[0]+ic('chev')+'</button><div class="sub"'+(open?'':' hidden')+'>'+links+'</div>'});
- $('#nav').innerHTML=h;
+  h+='<button type="button" class="grp'+(g[0]==g0?' has':'')+'" data-grp="'+g[0]+'" aria-expanded="'+open+'">'+g[0]+ic('chev')+'</button><div class="sub"'+(open?'':' hidden')+'>'+links+'</div>';
+ });
+ var el = $('#nav');
+ if (el) el.innerHTML = h;
 }
 function closeMenu(){$('#side').classList.remove('open');$('#scrim').classList.remove('open')}
 
@@ -350,7 +488,7 @@ function heroArt(){var nm=esc(S.settings.name),sh=esc(S.settings.name.split(/\s+
 
 var UP={'new-bill':1};
 function dpanel(cl,icon,title,sub,tiles){return '<div class="dp '+cl+'"><div class="dp-h"><span class="dp-ic">'+ic(icon)+'</span><div><b>'+title+'</b><small>'+sub+'</small></div></div><div class="dp-b">'+tiles.map(function(x){return '<div class="dt"><span class="dti">'+ic(x[0])+'</span><div><small>'+x[1]+'</small><strong>'+x[2]+'</strong></div>'+x[3]+'</div>'}).join('')+'</div></div>'}
-function dashboard(){
+function ownerDashboard(){
  var t=today(),y=dayOff(1);
  var ts=sum(dayBills(t),function(b){return b.total}),ys=sum(dayBills(y),function(b){return b.total});
  var tc=sum(dayBills(t),function(b){return b.paid}),yc=sum(dayBills(y),function(b){return b.paid});
@@ -397,10 +535,186 @@ function dashboard(){
  '<section class="dgrid"><div class="card"><div class="card-h"><h3>Sales Overview</h3><select class="sel" aria-label="Range"><option>This Week</option></select></div><div class="legend"><span><i style="background:#c2502a"></i>Sales</span><span><i style="background:#18a957"></i>Collections</span></div><div class="chart"><svg viewBox="0 0 580 210" role="img" aria-label="Sales and collections for the last 7 days">'+ch+'</svg></div></div>'+
  '<div class="card"><div class="card-h"><h3>Bottle Sales (This Month)</h3></div><div class="donut"><svg viewBox="0 0 170 170" role="img" aria-label="Bottle sales by size">'+dn+'<text x="85" y="84" font-size="24" font-weight="800" fill="var(--fg)" text-anchor="middle">'+(pn.length?tot.toLocaleString('en-IN'):'0')+'</text><text x="85" y="104" font-size="12" fill="var(--muted)" text-anchor="middle">Bottles</text></svg><div class="dl">'+(dl||'<div><span>No bottle sales this month yet</span></div>')+'</div></div></div>'+
  '<div class="card"><div class="card-h"><h3>Recent Activity</h3><a class="link" href="#bills">View All</a></div><ul class="act">'+act+'</ul></div></section>'+
- '<section class="grid3b"><div class="card"><div class="card-h"><h3>Quick Actions</h3></div><div class="qa">'+q('new-bill','q-blue','doc','Create New Bill')+q('customers','q-lb','user','Add Customer')+q('fg-dispatch','q-g','truck','Dispatch to Customers')+q('fg-empload','q-o','truck','Dispatch to Employees')+q('expenses','q-r','fuel','Add Expense')+q('attendance','q-v','check','Mark Attendance')+'</div></div>'+
+ '<section class="grid3b"><div class="card"><div class="card-h"><h3>Quick Actions</h3></div><div class="qa">'+
+ (canAct('create_bill')?q('new-bill','q-blue','doc','Create New Bill'):'')+
+ (canPage('customers')?q('customers','q-lb','user','Add Customer'):'')+
+ (canPage('fg-dispatch')?q('fg-dispatch','q-g','truck','Dispatch to Customers'):'')+
+ (canPage('fg-empload')?q('fg-empload','q-o','truck','Dispatch to Employees'):'')+
+ (canPage('expenses')?q('expenses','q-r','fuel','Add Expense'):'')+
+ (canPage('attendance')?q('attendance','q-v','check','Mark Attendance'):'')+
+ '</div></div>'+
  '<div class="card"><div class="card-h"><h3>Low Raw Material Alert</h3><a class="link" href="#current-stock">View All</a></div><ul class="low">'+low+'</ul></div>'+
- '<div class="card"><div class="card-h"><h3>Today’s Deliveries</h3><a class="link" href="#fg-dispatch">View All</a></div><ul class="del">'+dh+'</ul></div></section>'+
- '';
+ '<div class="card"><div class="card-h"><h3>Today’s Deliveries</h3><a class="link" href="#fg-dispatch">View All</a></div><ul class="del">'+dh+'</ul></div></section>';
+}
+
+function managerDashboard(){
+ var t=today(),y=dayOff(1);
+ var mon=t.slice(0,7);
+ var ddToday=S.fg.filter(function(r){return r.date==t&&(r.kind=='Dispatch'||r.kind=='EmpLoad')});
+ var totalDispCasesToday=sum(ddToday,function(r){return +r.qty||0});
+ var activeTrips=S.vehicleTrips.filter(function(tr){return tr.status==='active'||(!tr.handoverAt&&!tr.endedAt)}).length;
+ var bal=fgBal(),sizes=fgSizes(),fgTotal=sum(sizes,function(z){return fgGet(bal,'G1',z)+fgGet(bal,'G2',z)+fgGet(bal,'P',z)});
+ var pendDiesel=S.expenses.filter(function(e){return e.cat=='Diesel'&&dstat(e)=='Pending'}).length;
+ var empsOnDuty=S.attendance?S.attendance.filter(function(a){return a.date==t&&a.status=='Present'}).length:0;
+ var totalCust=S.customers.length,todayCust=S.customers.filter(function(c){return c.date==t}).length;
+ 
+ var days=[],lab=[];for(var i=6;i>=0;i--){var d=dayOff(i);days.push(d);lab.push(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(d+'T00:00').getDay()])}
+ var dispVol=days.map(function(d){return sum(S.fg.filter(function(r){return r.date==d&&(r.kind=='Dispatch'||r.kind=='EmpLoad')}),function(r){return +r.qty||0})});
+ var prodVol=days.map(function(d){return sum(S.fg.filter(function(r){return r.date==d&&r.kind=='Production'}),function(r){return +r.qty||0})});
+ var mx=Math.max.apply(null,dispVol.concat(prodVol).concat([1])),top=Math.ceil(mx/50)*50||50,ch='';
+ for(var g=0;g<=4;g++){var yy=20+g*40;ch+='<line x1="52" x2="560" y1="'+yy+'" y2="'+yy+'" stroke="var(--line)"/><text x="44" y="'+(yy+4)+'" font-size="11" fill="var(--muted)" text-anchor="end">'+(g==4?'0':Math.round((top/4*(4-g)))+' cs')+'</text>'}
+ days.forEach(function(d,i){var x=70+i*70,h1=dispVol[i]/top*160,h2=prodVol[i]/top*160;
+  ch+='<rect x="'+x+'" y="'+(180-h1)+'" width="22" height="'+h1+'" rx="3" fill="#c2502a"><title>'+lab[i]+' dispatched '+dispVol[i]+' cases</title></rect><rect x="'+(x+26)+'" y="'+(180-h2)+'" width="22" height="'+h2+'" rx="3" fill="#18a957"><title>'+lab[i]+' produced '+prodVol[i]+' cases</title></rect><text x="'+(x+24)+'" y="200" font-size="11" fill="var(--muted)" text-anchor="middle">'+lab[i]+'</text>'});
+
+ var pc={};S.bills.filter(function(b){return (b.date||'').slice(0,7)==mon}).forEach(function(b){b.items.forEach(function(it){pc[it.p]=(pc[it.p]||0)+it.q})});
+ var pn=Object.keys(pc).filter(function(k){return Number.isFinite(pc[k])&&pc[k]>0}),tot=sum(pn,function(k){return pc[k]})||1,cols=['#c2502a','#e4b768','#14b8c4','#f59e0b'],C=2*Math.PI*60,off=0,dn='';
+ pn.forEach(function(k,i){var L=pc[k]/tot*C;dn+='<circle cx="85" cy="85" r="60" fill="none" stroke="'+cols[i%4]+'" stroke-width="22" stroke-dasharray="'+L+' '+(C-L)+'" stroke-dashoffset="'+(-off)+'" transform="rotate(-90 85 85)"/>';off+=L});
+ var dl=pn.map(function(k,i){return '<div><i style="background:'+cols[i%4]+'"></i><span>'+esc(k)+'</span><b>'+Math.round(pc[k]).toLocaleString('en-IN')+' ('+Math.round(pc[k]/tot*100)+'%)</b></div>'}).join('');
+
+ var ev=[];
+ S.fg.filter(function(r){return r.kind=='Dispatch'||r.kind=='EmpLoad'}).slice(-2).reverse().forEach(function(r){ev.push(['truck','var(--brand-soft)','var(--brand)',(r.kind=='Dispatch'?'Customer Dispatch':'Employee Load')+': '+r.size,nf(r.qty)+' cases',ago(r.date)])});
+ S.stock.filter(function(r){return r.type=='Out'}).slice(-1).forEach(function(r){ev.push(['box','var(--amber-soft)','var(--amber)','Raw Material Used',r.item+' - '+r.qty,ago(r.date)])});
+ S.expenses.filter(function(e){return e.cat=='Diesel'}).slice(-1).forEach(function(r){ev.push(['fuel','var(--red-soft)','var(--red)','Diesel Expense Submitted',r.note||'Vehicle',ago(r.date)])});
+ var act=ev.map(function(e){return '<li><span class="dot" style="background:'+e[1]+';color:'+e[2]+'">'+ic(e[0])+'</span><div><b>'+esc(e[3])+'</b><small>'+esc(e[4])+'</small></div><time>'+e[5]+'</time></li>'}).join('');
+
+ var lv=stockLevels(),lows=Object.keys(lv).map(function(k){return [k,lv[k]]}).filter(function(a){return a[1]<=S.settings.low*1.5}).sort(function(a,b){return a[1]-b[1]}).slice(0,4);
+ var low=lows.length?lows.map(function(a){var L=a[1]<=S.settings.low*.6,cl=L?'var(--red)':'var(--amber)';return '<li><span class="ico">'+ic('box')+'</span><div class="t"><b>'+esc(a[0])+'</b><small>'+a[1]+' left</small></div><div class="bar"><i style="width:'+Math.min(100,a[1]/S.settings.low/1.5*100)+'%;background:'+cl+'"></i></div><span class="pill '+(L?'p-red':'p-amber')+'">'+(L?'Low':'Medium')+'</span></li>'}).join(''):'<li class="empty">All stock levels are healthy.</li>';
+
+ var truck='<svg class="tr" viewBox="0 0 48 32" fill="currentColor"><rect x="1" y="6" width="28" height="18" rx="2"/><path d="M31 11h9l6 7v6H31z"/><circle cx="11" cy="26" r="4" stroke="var(--surface)" stroke-width="2"/><circle cx="38" cy="26" r="4" stroke="var(--surface)" stroke-width="2"/></svg>';
+ var dd=S.fg.filter(function(r){return r.date==t&&(r.kind=='Dispatch'||r.kind=='EmpLoad')}).slice().reverse().slice(0,5);
+ var dh=dd.length?dd.map(function(r){var c=r.kind=='Dispatch';return '<li>'+truck+'<div class="t"><b>'+(c?esc(r.custName||'Customer'):'Load → '+esc(empName(r.emp)))+'</b><small>'+nf(r.qty)+' cases · '+esc(r.size)+' · from '+esc(locName(r.from))+'</small></div><span class="pill '+(c?'p-green':'p-amber')+'">'+(c?'Customer':'Employee')+'</span></li>'}).join(''):'<li class="muted" style="padding:10px 0">No dispatches yet today.</li>';
+ var q=function(h,c,i,l){return '<button class="'+c+'" data-go="'+h+'">'+ic(i)+l+'</button>'};
+
+ return '<section class="hero"><div class="hero-photo"><img src="'+IMG_HERO+'" alt="SR PLUS packaged drinking water"></div>'+
+  '<div class="welcome"><b>Operations Summary</b><h1>'+esc(curUser())+' 👋</h1><p>Here’s your operational plant & fleet overview for today</p><div class="quote">“Pure Water · Reliable Delivery · Timely Operations”</div></div>'+
+  '<div class="pure"><svg width="34" height="34" viewBox="0 0 24 24" fill="#18a957"><path d="M12 22c0-8-6-9-9-9 0 6 4 9 9 9zm0 0c0-9 5-12 9-12 0 7-4 12-9 12zM12 12C12 6 9 3 7 2c-1 4 1 8 5 10z"/></svg><span>Plant Operations<br>Active Monitoring</span></div></section>'+
+  '<section class="dpanels">'+
+  dpanel('dp-blue','truck','Fleet & Dispatches','Today’s dispatch volumes',[
+   ['truck','Dispatched Today',nf(totalDispCasesToday)+' cases','<em>Total customer & driver dispatches</em>'],
+   ['box','Active Trips',activeTrips,'<em>Delivery vehicles currently out</em>'],
+   ['fuel','Pending Diesel Approvals',pendDiesel,'<em>Waiting for manager approval</em>']])+
+  dpanel('dp-green','factory','Stock & Plant','Current production inventory',[
+   ['box','Finished Goods',nf(fgTotal)+' cases','<em>Stock in Godowns & Plant</em>'],
+   ['cal','Staff on Duty',empsOnDuty,'<em>Present today</em>'],
+   ['box','Low Stock Alerts',lows.length,'<em>Items near reorder level</em>']])+
+  dpanel('dp-purple','users','Customers','Network overview',[
+   ['users','Total Registered',totalCust,'<em>Customer database</em>'],
+   ['user','New Customers Today',todayCust,'<em>Registered today</em>'],
+   ['clock','Vehicles Registered',(S.vehicles||[]).length,'<em>Operational fleet</em>']])+
+  '</section>'+
+  '<section class="dgrid">'+
+  '<div class="card"><div class="card-h"><h3>Dispatches vs Production (Cases)</h3><select class="sel" aria-label="Range"><option>This Week</option></select></div><div class="legend"><span><i style="background:#c2502a"></i>Dispatched Cases</span><span><i style="background:#18a957"></i>Produced Cases</span></div><div class="chart"><svg viewBox="0 0 580 210" role="img" aria-label="Dispatches and production in cases for the last 7 days">'+ch+'</svg></div></div>'+
+  '<div class="card"><div class="card-h"><h3>Bottle Sales by Size (This Month)</h3></div><div class="donut"><svg viewBox="0 0 170 170" role="img" aria-label="Bottle volumes by size">'+dn+'<text x="85" y="84" font-size="24" font-weight="800" fill="var(--fg)" text-anchor="middle">'+(pn.length?tot.toLocaleString('en-IN'):'0')+'</text><text x="85" y="104" font-size="12" fill="var(--muted)" text-anchor="middle">Bottles</text></svg><div class="dl">'+(dl||'<div><span>No bottle movements this month yet</span></div>')+'</div></div></div>'+
+  '<div class="card"><div class="card-h"><h3>Recent Operational Activity</h3><a class="link" href="#fg-dispatch">View All</a></div><ul class="act">'+(act||'<li class="muted">No recent operations logged.</li>')+'</ul></div></section>'+
+  '<section class="grid3b"><div class="card"><div class="card-h"><h3>Operations Actions</h3></div><div class="qa">'+
+  (canAct('create_bill')?q('new-bill','q-blue','doc','Create New Bill'):'')+
+  (canPage('customers')?q('customers','q-lb','user','Add Customer'):'')+
+  (canPage('fg-dispatch')?q('fg-dispatch','q-g','truck','Dispatch to Customers'):'')+
+  (canPage('fg-empload')?q('fg-empload','q-o','truck','Dispatch to Employees'):'')+
+  (canAct('approve_diesel')?q('diesel-approvals','q-r','fuel','Diesel Approvals'):'')+
+  (canPage('attendance')?q('attendance','q-v','check','Mark Attendance'):'')+
+  '</div></div>'+
+  '<div class="card"><div class="card-h"><h3>Low Raw Material Alert</h3><a class="link" href="#current-stock">View All</a></div><ul class="low">'+low+'</ul></div>'+
+  '<div class="card"><div class="card-h"><h3>Today’s Deliveries</h3><a class="link" href="#fg-dispatch">View All</a></div><ul class="del">'+dh+'</ul></div></section>';
+}
+
+function employeeDashboard(){
+ var t=today();
+ var myProf=CURRENT_PROFILE||{};
+ var myEmpId=myProf.employee_id;
+ var myName=myProf.full_name||'Staff';
+ var activeTrip=(window.ACTIVE_TRIP&&window.ACTIVE_TRIP.trip)||(S.vehicleTrips||[]).filter(function(tr){return (!myEmpId||tr.employee==myEmpId)&&(!tr.handoverAt&&!tr.endedAt)})[0]||null;
+ var stops=(window.ACTIVE_TRIP&&window.ACTIVE_TRIP.stops)||(activeTrip&&activeTrip.stops)||[];
+ var completedStops=stops.filter(function(s){return s.status==='completed'}).length;
+ var remainingStops=stops.filter(function(s){return s.status!=='completed'&&s.status!=='skipped'}).length;
+ var bottlesDelivered=sum(stops.filter(function(s){return s.status==='completed'}),function(s){return (s.cases_delivered||0)+(s.quantity||0)});
+
+ var myAtt=(S.attendance||[]).filter(function(a){return (!myEmpId||a.employee==myEmpId)&&a.date==t})[0];
+ var attStatus=myAtt?(myAtt.status==='Present'?'Punched In ('+(myAtt.inTime?fmt12(myAtt.inTime):'Today')+')':'Marked '+myAtt.status):'Not Punched Today';
+
+ var q=function(h,c,i,l){return '<button class="'+c+'" data-go="'+h+'">'+ic(i)+l+'</button>'};
+
+ var stopsListHtml='';
+ if(stops.length){
+  stopsListHtml=stops.slice(0,5).map(function(s,i){
+   var done=s.status==='completed',skip=s.status==='skipped';
+   var badge=done?'<span class="pill p-green">Delivered</span>':skip?'<span class="pill p-red">Skipped</span>':'<span class="pill p-blue">Stop #'+(i+1)+'</span>';
+   return '<li style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);">'+
+    '<div><b>'+esc(s.customer_name||s.name||'Stop #'+(i+1))+'</b><br><small class="muted">'+esc(s.address||'No address')+'</small></div>'+badge+'</li>';
+  }).join('');
+ }else{
+  stopsListHtml='<li class="muted" style="padding:14px 0;">No active route assigned today. Tap "Open My Delivery Route" to check for assignments.</li>';
+ }
+
+ return '<section class="hero"><div class="hero-photo"><img src="'+IMG_HERO+'" alt="SR PLUS packaged drinking water"></div>'+
+  '<div class="welcome"><b>My Day</b><h1>'+esc(myName)+' 👋</h1><p>Your daily delivery tasks, attendance and schedule</p><div class="quote">“Safe Driving · Clean Water · Satisfied Customers”</div></div>'+
+  '<div class="pure"><svg width="34" height="34" viewBox="0 0 24 24" fill="#18a957"><path d="M12 22c0-8-6-9-9-9 0 6 4 9 9 9zm0 0c0-9 5-12 9-12 0 7-4 12-9 12zM12 12C12 6 9 3 7 2c-1 4 1 8 5 10z"/></svg><span>Stay Safe<br>On Route</span></div></section>'+
+  '<section class="dpanels">'+
+  dpanel('dp-blue','truck','My Route Status','Today’s deliveries',[
+   ['truck','Active Trip',activeTrip?(activeTrip.vehicle_number||vehNo(activeTrip.vehicle)||'Assigned'):'None active','<em>Assigned vehicle</em>'],
+   ['box','Stops Completed',completedStops+' / '+stops.length,'<em>'+remainingStops+' stops remaining</em>'],
+   ['check','Bottles Delivered',bottlesDelivered,'<em>Delivered today</em>']])+
+  dpanel('dp-green','cal','My Attendance','Punch & shift',[
+   ['cal','Punch Status',attStatus,'<em>Shift tracking</em>'],
+   ['clock','Shift Timing','8:00 AM – 6:00 PM','<em>Regular duty hours</em>'],
+   ['check','Status','Active on Duty','<em>Attendance logged</em>']])+
+  dpanel('dp-purple','user','My Account','Payslip & portal',[
+   ['user','Duty Tags',Array.isArray(myProf.duties)&&myProf.duties.length?myProf.duties.join(', '):'General Staff','<em>Role permissions</em>'],
+   ['doc','Monthly Payslip','Available','<em>Tap to view salary portal</em>'],
+   ['wallet','Day Settlement',activeTrip?'Trip in progress':'Ready for handover','<em>Day close record</em>']])+
+  '</section>'+
+  '<section class="dgrid">'+
+  '<div class="card" style="grid-column:1/-1;"><div class="card-h"><h3>My Today’s Route Stops</h3><a class="link" href="#my-route">Open My Route</a></div><ul style="list-style:none;padding:0;margin:0;">'+stopsListHtml+'</ul></div>'+
+  '</section>'+
+  '<section class="grid3b"><div class="card" style="grid-column:1/-1;"><div class="card-h"><h3>My Actions</h3></div><div class="qa">'+
+  q('my-route','q-blue','truck','Open My Delivery Route')+
+  q('day-close','q-g','wallet','Day Close & Handover')+
+  q('attendance','q-v','check','Punch Attendance')+
+  '<button class="q-lb" onclick="location.hash=\'#me='+(myEmpId||'')+'\'">'+ic('doc')+'My Payslip / Portal</button>'+
+  '</div></div></section>';
+}
+
+function adminDashboard(){
+ var totalUsers=(S.users||[]).length||4;
+ var activeUsers=(S.users||[]).filter(function(u){return u.active!==false}).length||4;
+ var totalBills=S.bills.length;
+ var totalCust=S.customers.length;
+ var totalEmps=S.employees.length;
+ var totalVeh=(S.vehicles||[]).length;
+ var pendingOutbox=(typeof OutboxDB!=='undefined'&&OutboxDB.state&&OutboxDB.state.pendingItems)?OutboxDB.state.pendingItems.length:0;
+ var q=function(h,c,i,l){return '<button class="'+c+'" data-go="'+h+'">'+ic(i)+l+'</button>'};
+
+ return '<section class="hero"><div class="hero-photo"><img src="'+IMG_HERO+'" alt="SR PLUS packaged drinking water"></div>'+
+  '<div class="welcome"><b>System Administration</b><h1>'+esc(curUser())+' (Admin) 🛡️</h1><p>Technical diagnostic & audit dashboard</p><div class="quote">“System Integrity · Least Privilege · Complete Audit Trail”</div></div>'+
+  '<div class="pure"><svg width="34" height="34" viewBox="0 0 24 24" fill="#c2502a"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg><span>Technical Mode<br>Audit & Security</span></div></section>'+
+  '<section class="dpanels">'+
+  dpanel('dp-blue','users','User Accounts & Auth','Authentication directory',[
+   ['users','Total User Accounts',totalUsers,'<em>Security profiles</em>'],
+   ['user','Active Users',activeUsers,'<em>Can authenticate</em>'],
+   ['gear','MFA / Security','Turnstile Enforced','<em>Worker security check</em>']])+
+  dpanel('dp-green','doc','System Records','Database entity audit',[
+   ['doc','Recorded Bills',totalBills,'<em>Audited invoices</em>'],
+   ['user','Customer Accounts',totalCust,'<em>Customer directory</em>'],
+   ['truck','Fleet Vehicles',totalVeh,'<em>Registered vehicles</em>']])+
+  dpanel('dp-purple','gear','Runtime Environment','Cloudflare Pages & Supabase',[
+   ['box','Offline Outbox Queue',pendingOutbox+' items','<em>Pending sync items</em>'],
+   ['gear','Service Role Guard','Enforced','<em>RPCS allowlist active</em>'],
+   ['bars','Operational Access','Read-Only','<em>Transactions immutable</em>']])+
+  '</section>'+
+  '<section class="grid3b"><div class="card" style="grid-column:1/-1;"><div class="card-h"><h3>Administrative Quick Actions</h3></div><div class="qa">'+
+  q('users','q-blue','users','Manage User Accounts')+
+  q('settings','q-lb','gear','Technical Settings Audit')+
+  q('bills','q-g','doc','View All Bills Archive')+
+  q('vehicles','q-o','truck','Fleet Vehicles Directory')+
+  '</div></div></section>'+
+  '<div class="note" style="margin-top:14px;"><b>Administrator Notice:</b> Admin accounts operate in technical audit mode with read-only access to business transactions, stock entries, and operational records. User account creation and database audit tools are active.</div>';
+}
+
+function dashboard(){
+ if (CURRENT_ROLE === 'employee') return employeeDashboard();
+ if (CURRENT_ROLE === 'manager') return managerDashboard();
+ if (CURRENT_ROLE === 'admin') return adminDashboard();
+ return ownerDashboard();
 }
 /* ---------- generic page helpers ---------- */
 var PRODUCTS=function(){return [['20 Ltr',S.settings.rate20],['10 Ltr',S.settings.rate10],['5 Ltr',S.settings.rate5]]};
@@ -411,7 +725,13 @@ function fld(f){var id='f-'+f.k,v=f.v!=null?f.v:(f.t=='date'?today():'');
  return '<div class="fld"><label for="'+id+'">'+f.l+'</label><input id="'+id+'" name="'+f.k+'" type="'+(f.t||'text')+'" value="'+esc(v)+'"'+(f.list?' list="'+f.list+'"':'')+(f.t=='number'?' min="0" step="any" inputmode="decimal"':'')+(f.r===false?'':' required')+'></div>'}
 function table(cols,rows,empty){if(!rows.length)return '<div class="card tw"><div class="empty">'+(empty||'Nothing here yet.')+'</div></div>';
  return '<div class="card tw" style="padding:6px"><table><thead><tr>'+cols.map(function(c){return '<th>'+c+'</th>'}).join('')+'</tr></thead><tbody>'+rows.map(function(r){return '<tr>'+r.map(function(c,i){return '<td data-l="'+esc(cols[i]||'')+'">'+c+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div>'}
-function del(coll,id){return '<button class="btn sm danger" data-del="'+coll+':'+id+'" aria-label="Delete">Delete</button>'}
+function del(coll,id){
+ if (coll === 'payments' && !canAct('reverse_payment')) return '';
+ if (coll === 'bills' && !canAct('cancel_bill')) return '';
+ if (coll === 'employees' && !isOwner()) return '';
+ if ((coll === 'expenses' || coll === 'stock' || coll === 'fg' || coll === 'customers') && !isOwner() && !isManager()) return '';
+ return '<button class="btn sm danger" data-del="'+coll+':'+id+'" aria-label="Delete">Delete</button>';
+}
 function head(t,extra){return '<div class="ph"><h2>'+t+'</h2>'+(extra||'')+'</div>'}
 function formCard(fields,btn,id){var lists=fields.filter(function(f){return f.list}).map(function(f){return '<datalist id="'+f.list+'">'+(f.options||[]).map(function(o){return '<option value="'+esc(o)+'"></option>'}).join('')+'</datalist>'}).join('');return '<form class="card form" id="'+id+'" autocomplete="off">'+fields.map(fld).join('')+'<div class="fld"><button class="btn" type="submit" style="width:100%;height:42px">'+btn+'</button></div>'+lists+'</form>'}
 function kp(a){return '<div class="kpis">'+a.map(function(k){return '<div class="kpi"><small>'+k[0]+'</small><b>'+k[1]+'</b></div>'}).join('')+'</div>'}
@@ -525,9 +845,20 @@ var PAGES={
  'rep-pay':function(){var m={};S.payments.forEach(function(p){m[p.mode]=(m[p.mode]||0)+p.amount});return head('Payment Reports')+kp(Object.keys(m).map(function(k){return [k,inr(m[k])]}))+table(['Customer','Received','Outstanding'],S.customers.map(function(c){return [esc(c.name),inr(sum(S.payments.filter(function(p){return p.cust==c.id}),function(p){return p.amount})),inr(outstanding(c.id))]}))},
  'rep-stock':function(){var i={},o={};S.stock.forEach(function(r){(r.type=='In'?i:o)[r.item]=((r.type=='In'?i:o)[r.item]||0)+r.qty});return head('Stock Reports')+table(['Item','Total in','Total out','Balance'],ITEMS.map(function(k){return [esc(k),i[k]||0,o[k]||0,'<b>'+((i[k]||0)-(o[k]||0))+'</b>']}))},
  'rep-exp':function(){var m={};S.expenses.forEach(function(e){m[e.cat]=(m[e.cat]||0)+e.amount});var t=sum(S.expenses,function(e){return e.amount}),inc=sum(S.bills,function(b){return b.paid});return head('Expense Reports')+kp([['Total expenses',inr(t)],['Collections',inr(inc)],['Net',inr(inc-t)]])+table(['Category','Amount','Share'],Object.keys(m).map(function(k){return [esc(k),inr(m[k]),Math.round(m[k]/t*100)+'%']}))},
- settings:function(){FORMS.sf=function(v){var s=S.settings;s.name=v.name;s.owner=v.owner;s.phone=v.phone;s.gst=v.gst;s.address=v.address;s.upiId=(v.upiId||'').trim();s.upiPayee=(v.upiPayee||v.name||'Larven Enterprises').trim();s.low=+v.low;s.products.forEach(function(p,i){p.r=+v['pr'+i]||0});return 'Settings saved'};var s=S.settings;
+ settings:function(){
+  if (!canPage('settings')) return head('Business Settings') + '<div class="note bad">Access denied: Business settings are owner-only.</div>';
+  var isOwn = canAct('edit_settings');
+  FORMS.sf=function(v){
+   if (!canAct('edit_settings')) return 'ERROR: Only the Owner can modify business settings. Admin mode is read-only technical audit.';
+   var s=S.settings;s.name=v.name;s.owner=v.owner;s.phone=v.phone;s.gst=v.gst;s.address=v.address;s.upiId=(v.upiId||'').trim();s.upiPayee=(v.upiPayee||v.name||'Larven Enterprises').trim();s.low=+v.low;s.products.forEach(function(p,i){p.r=+v['pr'+i]||0});return 'Settings saved'};
+  var s=S.settings;
   var pf=[];s.products.forEach(function(p,i){pf.push({k:'pr'+i,l:p.n+' Case of '+p.c+' - price per case (\u20B9)',t:'number',v:p.r})});
-  return head('Business Settings')+formCard([{k:'name',l:'Business name',v:s.name},{k:'owner',l:'Owner name',v:s.owner},{k:'phone',l:'Phone',v:s.phone,r:false},{k:'gst',l:'GST number',v:s.gst,r:false},{k:'address',l:'Business address (shown on bill)',v:s.address,r:false},{k:'upiPayee',l:'UPI Payee Name',v:s.upiPayee||s.name,r:false},{k:'upiId',l:'PhonePe / UPI ID (e.g. business@upi)',v:s.upiId||'',r:false},{k:'low',l:'Low stock level',t:'number',v:s.low}].concat(pf),'Save Settings','sf')+'<div class="note">PhonePe QR uses this UPI ID and the amount entered on the New Bill page. Payment is not automatically verified.</div>'+billSettingsCard()}
+  var adminAudit = !isOwn ? '<div class="card" style="margin-bottom:14px;border-left:4px solid var(--amber);"><h3>Technical Configuration Audit (Admin Mode)</h3><p class="pdesc">Business operational settings can only be altered by the Owner account. You are viewing in technical audit mode.</p><div class="pf" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;"><div><small class="muted">Platform</small><br><b>Cloudflare Pages + Workers</b></div><div><small class="muted">Database</small><br><b>Supabase Postgres Live (RLS Enforced)</b></div><div><small class="muted">Security Check</small><br><b>Cloudflare Turnstile Active</b></div><div><small class="muted">Audit State</small><br><b>Read-Only Configuration</b></div></div></div>' : '';
+  var formHtml = formCard([{k:'name',l:'Business name',v:s.name},{k:'owner',l:'Owner name',v:s.owner},{k:'phone',l:'Phone',v:s.phone,r:false},{k:'gst',l:'GST number',v:s.gst,r:false},{k:'address',l:'Business address (shown on bill)',v:s.address,r:false},{k:'upiPayee',l:'UPI Payee Name',v:s.upiPayee||s.name,r:false},{k:'upiId',l:'PhonePe / UPI ID (e.g. business@upi)',v:s.upiId||'',r:false},{k:'low',l:'Low stock level',t:'number',v:s.low}].concat(pf),isOwn ? 'Save Settings' : 'Save Disabled (Owner Only)','sf');
+  if (!isOwn) {
+    formHtml = formHtml.replace('<button class="btn" type="submit"', '<button class="btn alt" type="button" disabled style="opacity:0.6;cursor:not-allowed;" title="Owner only"');
+  }
+  return head('Business Settings')+adminAudit+formHtml+'<div class="note">PhonePe QR uses this UPI ID and the amount entered on the New Bill page. Payment is not automatically verified.</div>'+billSettingsCard()}
 };
 function stockPage(type,title,note){var f='sf'+type;FORMS[f]=function(v){S.stock.push({id:nid('S',S.stock),date:v.date,type:type,item:v.item,qty:+v.qty,note:v.note||note});return 'Stock '+type.toLowerCase()+' saved'};
  return head(title)+formCard([{k:'item',l:'Item',t:'select',o:ITEMS},{k:'qty',l:'Quantity',t:'number'},{k:'note',l:'Note',r:false,v:note},{k:'date',l:'Date',t:'date'}],'Save','FORM-'+f)+table(['Date','Item','Qty','Note',''],S.stock.filter(function(r){return r.type==type}).slice().reverse().map(function(r){return [r.date,esc(r.item),r.qty,esc(r.note),del('stock',r.id)]}))}
@@ -665,6 +996,9 @@ function casesVal(l){return Math.round(l.q/(lc(l).c||1)*100)/100}
 function catIndex(n,c){var P=S.settings.products;for(var i=0;i<P.length;i++)if(P[i].n==n&&P[i].c==c)return i;return -1}
 function newLine(){return {pi:-2,q:0,r:0}}
 function newBillPage(){
+ if (!canAct('create_bill')) {
+  return head2('New Bill') + '<div class="card" style="padding:24px;text-align:center;"><div class="note warn" style="display:inline-block;text-align:left;">Billing is restricted: Only Managers and Owners are authorized to create or edit customer bills. Admin access is read-only.</div></div>';
+ }
  var eb=EDITID?S.bills.filter(function(b){return b.id==EDITID})[0]:null;if(!eb)EDITID=null;
  var pre=!eb&&NBPRE?cget(NBPRE):null;NBPRE=null;
  var d=eb?billData(eb):(pre?{name:pre.name,mobile:digits(pre.phone),addr:pre.area||'',paid:0,mode:'Cash'}:{name:'',mobile:'',addr:'',paid:0,mode:'Cash'});
@@ -749,6 +1083,10 @@ function pickCustomer(id){var c=S.customers.filter(function(x){return x.id==id})
 function clearErr(sel){var el=typeof sel=='string'?$(sel):sel;if(!el)return;var f=el.closest('.fld');if(!f)return;f.classList.remove('err');var m=f.querySelector('.em');if(m)m.remove()}
 function bad(sel,msg){var el=$(sel);toast(msg);if(!el)return false;var f=el.closest('.fld');f.classList.add('err');if(!f.querySelector('.em')){var s=document.createElement('span');s.className='em';s.textContent=msg;f.appendChild(s)}el.focus();if(el.scrollIntoView)el.scrollIntoView({block:'center',behavior:'smooth'});return false}
 function saveBill(){
+ if (!canAct('create_bill')) {
+  toast('Access denied: You do not have permission to create or edit bills.');
+  return false;
+ }
  var name=$('#nb-name').value.trim(),mob=digits($('#nb-mob').value),addr=$('#nb-addr').value.trim(),mode=$('#nb-mode').value;
  ['#nb-name','#nb-mob','#nb-addr','#nb-rec'].forEach(clearErr);
  if(!name)return bad('#nb-name','Enter the customer name');
@@ -912,7 +1250,10 @@ function billTable(list,hideCust){
   if(!hideCust)row.push('<div><b>'+esc(bname(b))+'</b><br><small class="muted">'+esc(baddr(b)||'No address')+'</small><br><small class="muted">'+esc(bmob(b))+'</small></div>');
   row.push('<div>'+b.items.map(function(i){return esc(itemTxt(i))}).join('<br>')+'</div>',money(b.total),money(b.paid),'<b style="color:'+(due>0?'var(--red)':'var(--green)')+'">'+money(due)+'</b>',
    '<span class="pill '+(due<=0?'p-green':b.paid?'p-amber':'p-red')+'">'+(due<=0?'Paid':b.paid?'Partial':'Unpaid')+'</span>',
-   '<div class="rowact"><button class="btn sm alt" data-nb="preview" data-id="'+b.id+'">View</button><button class="btn sm alt" data-nb="edit" data-id="'+b.id+'">Edit</button><button class="btn sm" style="background:var(--amber-soft);color:#a86500" data-billact="cancel" data-id="'+b.id+'">Cancel</button><button class="btn sm danger" data-billact="delete" data-id="'+b.id+'">Delete</button></div>');
+   '<div class="rowact"><button class="btn sm alt" data-nb="preview" data-id="'+b.id+'">View</button>'+
+   (canAct('create_bill')?'<button class="btn sm alt" data-nb="edit" data-id="'+b.id+'">Edit</button>':'')+
+   (canAct('cancel_bill')?'<button class="btn sm" style="background:var(--amber-soft);color:#a86500" data-billact="cancel" data-id="'+b.id+'">Cancel</button><button class="btn sm danger" data-billact="delete" data-id="'+b.id+'">Delete</button>':'')+
+   '</div>');
   return row});
  return table(cols,rows,'No bills found.')}
 var ABF={q:'',st:'all',from:'',to:'',gst:'all',bucket:'active'};
@@ -938,7 +1279,7 @@ function abResult(){if(ABF.bucket!='active'){var list=ABF.bucket=='cancelled'?S.
  var l=filteredBills(),t=sum(l,function(b){return b.total}),p=sum(l,function(b){return b.paid}),st=mobileStatementBills();
  return billBucketTabs()+kp([['Bills shown',l.length],['Total billed',money(t)],['Received',money(p)],['Pending','<span style="color:'+(t-p>0?'var(--red)':'var(--green)')+'">'+money(t-p)+'</span>']])+gchips()+(st.length?'<div class="card" style="margin:12px 0;padding:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:220px"><b>'+esc(bname(st[0]))+' · '+esc(bmob(st[0]))+'</b><div class="muted">'+st.length+' bills found · All bills of this mobile number'+gl()+'</div></div><button type="button" class="btn alt" data-ab="statement-preview">Preview Bills</button><button type="button" class="btn alt" data-ab="statement-download">Download PDF</button><button type="button" class="btn wa" data-ab="statement-send">Send on WhatsApp</button></div>':'')+billTable(l)}
 function allBillsPage(){ABF={q:'',st:'all',from:'',to:'',gst:'all',bucket:'active'};
- return head2('All Bills','Every bill you have made. Search, filter, open a bill to print or share it, or edit a wrong amount or address.','<a class="btn" href="#new-bill" style="text-decoration:none">+ New Bill</a>')+
+ return head2('All Bills','Every bill you have made. Search, filter, open a bill to print or share it, or edit a wrong amount or address.',(canAct('create_bill')?'<a class="btn" href="#new-bill" style="text-decoration:none">+ New Bill</a>':''))+
  '<div class="card abf"><div class="fld"><label for="ab-q">Search</label><input id="ab-q" type="search" placeholder="Bill no, name, mobile or address" autocomplete="off"></div>'+
  '<div class="fld"><label for="ab-st">Status</label><select id="ab-st"><option value="all">All bills</option><option value="credit">With pending amount</option><option value="paid">Fully paid</option></select></div>'+
  '<div class="fld"><label for="ab-from">From date</label><input id="ab-from" type="date"></div><div class="fld"><label for="ab-to">To date</label><input id="ab-to" type="date"></div>'+
@@ -1176,14 +1517,14 @@ function wmHTML(X){var w=X&&X.wm;if(!w||w=='SR INDUSTRIES')return '<div class="s
 /* ---- global search ---- */
 var GS={items:[],sel:0};
 function gsFind(q){q=(q||'').trim().toLowerCase();if(!q)return [];var d=digits(q),out=[],has=function(a){var j=a.join(' ').toLowerCase();return j.indexOf(q)>-1||(d.length>2&&digits(j).indexOf(d)>-1)};
- S.customers.filter(function(c){return has([c.name,c.phone,c.area,c.id])}).slice(0,6).forEach(function(c){var st=cstat(c);out.push({g:'Customers',t:c.name,s:c.phone+(c.area?' · '+c.area:'')+(st.pend>0?' · Due '+money(st.pend):''),a:'cust',id:c.id})});
- S.bills.filter(function(b){return has([b.id,b.name,b.mobile,b.date,b.mode])}).slice(-6).reverse().forEach(function(b){out.push({g:'Bills',t:'Bill #'+b.id+' · '+(b.name||''),s:fdate(b.date)+' · '+money(b.total)+(b.total>b.paid?' · Due '+money(round2(b.total-b.paid)):' · Paid'),a:'bill',id:b.id})});
- S.employees.filter(function(e){return has([e.name,e.phone,e.role,e.id])}).slice(0,5).forEach(function(e){var al=eaAlloc(e.name),left=al?fgSizes().map(function(z){return eaLeft(al,z)>0?z+' '+nf(eaLeft(al,z)):''}).filter(Boolean).join(', '):'';out.push({g:'Employees',t:e.name,s:(e.role||'')+' · '+(e.phone||'')+(left?' · On vehicle: '+left:''),a:'go',id:'employees'})});
- var bl=fgBal();fgSizes().filter(function(z){return z.toLowerCase().indexOf(q)>-1}).forEach(function(z){out.push({g:'Stock',t:z+' – finished stock',s:['G1','G2','P'].map(function(l){return locName(l).split(' (')[0]+' '+nf(fgGet(bl,l,z))}).join(' · '),a:'go',id:'stock-overview'})});
- var lv=stockLevels();Object.keys(lv).filter(function(k){return k.toLowerCase().indexOf(q)>-1}).slice(0,4).forEach(function(k){out.push({g:'Stock',t:k+' – raw material',s:nf(lv[k])+' in stock',a:'go',id:'current-stock'})});
- (S.vehicles||[]).filter(function(v){return has([v.number,v.driver,v.type])}).slice(0,3).forEach(function(v){out.push({g:'Vehicles',t:v.number,s:(v.type||'')+(v.driver?' · '+v.driver:''),a:'go',id:'vehicles'})});
- (S.contacts||[]).filter(function(c){return has([c.name,c.phone,c.work,c.type])}).slice(0,3).forEach(function(c){out.push({g:'Contacts',t:c.name,s:(c.type||'')+' · '+c.phone,a:'go',id:'contacts'})});
- NAV.forEach(function(g){g[1].forEach(function(n){if(n[1].toLowerCase().indexOf(q)>-1)out.push({g:'Pages',t:n[1],s:'Open page',a:'go',id:n[0]})})});
+ if(canPage('customers')){S.customers.filter(function(c){return has([c.name,c.phone,c.area,c.id])}).slice(0,6).forEach(function(c){var st=cstat(c);out.push({g:'Customers',t:c.name,s:c.phone+(c.area?' · '+c.area:'')+(st.pend>0?' · Due '+money(st.pend):''),a:'cust',id:c.id})});}
+ if(canPage('bills')){S.bills.filter(function(b){return has([b.id,b.name,b.mobile,b.date,b.mode])}).slice(-6).reverse().forEach(function(b){out.push({g:'Bills',t:'Bill #'+b.id+' · '+(b.name||''),s:fdate(b.date)+' · '+money(b.total)+(b.total>b.paid?' · Due '+money(round2(b.total-b.paid)):' · Paid'),a:'bill',id:b.id})});}
+ if(canPage('employees')){S.employees.filter(function(e){return has([e.name,e.phone,e.role,e.id])}).slice(0,5).forEach(function(e){var al=eaAlloc(e.name),left=al?fgSizes().map(function(z){return eaLeft(al,z)>0?z+' '+nf(eaLeft(al,z)):''}).filter(Boolean).join(', '):'';out.push({g:'Employees',t:e.name,s:(e.role||'')+' · '+(e.phone||'')+(left?' · On vehicle: '+left:''),a:'go',id:'employees'})});}
+ if(canPage('stock-overview')){var bl=fgBal();fgSizes().filter(function(z){return z.toLowerCase().indexOf(q)>-1}).forEach(function(z){out.push({g:'Stock',t:z+' – finished stock',s:['G1','G2','P'].map(function(l){return locName(l).split(' (')[0]+' '+nf(fgGet(bl,l,z))}).join(' · '),a:'go',id:'stock-overview'})});}
+ if(canPage('current-stock')){var lv=stockLevels();Object.keys(lv).filter(function(k){return k.toLowerCase().indexOf(q)>-1}).slice(0,4).forEach(function(k){out.push({g:'Stock',t:k+' – raw material',s:nf(lv[k])+' in stock',a:'go',id:'current-stock'})});}
+ if(canPage('vehicles')){(S.vehicles||[]).filter(function(v){return has([v.number,v.driver,v.type])}).slice(0,3).forEach(function(v){out.push({g:'Vehicles',t:v.number,s:(v.type||'')+(v.driver?' · '+v.driver:''),a:'go',id:'vehicles'})});}
+ if(canPage('contacts')){(S.contacts||[]).filter(function(c){return has([c.name,c.phone,c.work,c.type])}).slice(0,3).forEach(function(c){out.push({g:'Contacts',t:c.name,s:(c.type||'')+' · '+c.phone,a:'go',id:'contacts'})});}
+ NAV.forEach(function(g){g[1].forEach(function(n){if(canPage(n[0])&&n[1].toLowerCase().indexOf(q)>-1)out.push({g:'Pages',t:n[1],s:'Open page',a:'go',id:n[0]})})});
  return out.slice(0,24)}
 function gsBox(){var b=$('#gsres');if(!b){b=document.createElement('div');b.id='gsres';b.className='gsres';b.hidden=true;document.body.appendChild(b)}return b}
 function gsShow(){var inp=$('#q'),b=gsBox(),v=inp.value;GS.items=gsFind(v);GS.sel=0;if(!v.trim()){b.hidden=true;return}
@@ -1241,6 +1582,7 @@ document.addEventListener('submit',function(e){if(e.target.id!='payform')return;
 
 /* ----- Bill cancellation and controlled deletion ----- */
 function billDispositionModal(action,id){
+ if (!canAct('cancel_bill')) { toast('Access denied: You do not have permission to cancel or delete bills.'); return; }
  var b=S.bills.filter(function(x){return x.id==id})[0];if(!b)return;
  var isDel=action=='delete',title=isDel?'Delete bill #'+esc(id):'Cancel bill #'+esc(id);
  var linkedPayments=S.payments.filter(function(p){return p.bill==id}),linkedAmount=sum(linkedPayments,function(p){return p.amount||0});
@@ -1252,7 +1594,9 @@ function billDispositionModal(action,id){
  '<div class="note warn">'+(isDel?'Moving this bill to Deleted Bills archive.':'Cancellation keeps the original bill in the Cancelled Bills archive.')+'</div><div class="dact"><button type="button" class="btn alt" data-nb="close">Go back</button><button type="submit" class="btn '+(isDel?'danger':'')+'">'+(isDel?'Confirm Deletion':'Confirm Cancellation')+'</button></div></form>';
  openModal(html);
 }
-function archiveBill(action,id,data){var b=S.bills.filter(function(x){return x.id==id})[0];if(!b)return false;
+function archiveBill(action,id,data){
+ if (!canAct('cancel_bill')) { toast('Access denied: Bill cancellation not permitted.'); return false; }
+ var b=S.bills.filter(function(x){return x.id==id})[0];if(!b)return false;
  var archived=Object.assign({},b,{archiveType:action,actionReason:data.actionReason.trim(),actionBy:data.actionBy.trim(),actionDate:new Date().toLocaleString('en-IN'),actionAt:new Date().toISOString()});
  if(action=='cancel')S.cancelledBills.push(archived);else S.deletedBills.push(archived);
  S.bills=S.bills.filter(function(x){return x.id!=id});save();closeModal();render();toast('Bill #'+id+(action=='cancel'?' cancelled':' moved to Deleted Bills')+'. Reason saved.');return true}
@@ -1264,6 +1608,8 @@ document.addEventListener('submit',function(e){var f=e.target;
 document.addEventListener('click',function(e){var t=e.target.closest('[data-billact]');if(t)billDispositionModal(t.dataset.billact,t.dataset.id)});
 /* ----- Deleting with a clear warning, cascade and Undo ----- */
 function askDelete(kind,id){var h='',pays,bl;
+ if(kind=='payments'&&!canAct('reverse_payment')){toast('Access denied: Payment reversal not permitted.');return;}
+ if(kind=='bills'&&!canAct('cancel_bill')){toast('Access denied: Bill deletion not permitted.');return;}
  if(kind=='payments'){var p=S.payments.filter(function(x){return x.id==id})[0];if(!p)return;
   h='<h3>Delete this payment?</h3><p><b>'+money(p.amount)+'</b> received from <b>'+esc(custName(p.cust))+'</b> on '+fdate(p.date)+(p.bill=='-'?' (advance)':' against bill <b>#'+esc(p.bill)+'</b>')+'.'+(p.bill=='-'?'':'<br><br>Bill #'+esc(p.bill)+' will show this '+money(p.amount)+' as pending again, everywhere (Customers, All Bills, Credit / Outstanding, Dashboard).')+'</p>'}
  else if(kind=='bills'){var b=S.bills.filter(function(x){return x.id==id})[0];if(!b)return;pays=S.payments.filter(function(x){return x.bill==id});
@@ -1272,6 +1618,8 @@ function askDelete(kind,id){var h='',pays,bl;
   h='<h3>Delete customer '+esc(c.name)+'?</h3><p>'+(bl.length?'This will also delete their <b>'+bl.length+' bill'+(bl.length>1?'s':'')+'</b> ('+money(sum(bl,function(x){return x.total}))+') and <b>'+pays.length+' payment'+(pays.length==1?'':'s')+'</b>. Their pending '+money(cstat(c).pend)+' will disappear from Credit / Outstanding.':'This customer has no bills or payments.')+'</p>'}
  openModal(h+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Cancel</button><button type="button" class="btn" style="background:var(--red);color:#fff" data-dx="'+kind+':'+id+'">Yes, delete</button></div>')}
 function doDelete(kind,id){var snap=JSON.stringify(S),msg;
+ if(kind=='payments'&&!canAct('reverse_payment')){toast('Access denied: Payment reversal not permitted.');return;}
+ if(kind=='bills'&&!canAct('cancel_bill')){toast('Access denied: Bill deletion not permitted.');return;}
  if(kind=='payments'){S.payments=S.payments.filter(function(x){return x.id!=id});msg='Payment deleted'}
  else if(kind=='bills'){S.payments=S.payments.filter(function(x){return x.bill!=id});S.bills=S.bills.filter(function(x){return x.id!=id});msg='Bill '+id+' deleted'}
  else{S.payments=S.payments.filter(function(x){return x.cust!=id});S.bills=S.bills.filter(function(x){return x.cust!=id});S.customers=S.customers.filter(function(x){return x.id!=id});CV=null;msg='Customer deleted'}
@@ -1330,6 +1678,7 @@ var ROLES=['Driver','Helper','Operator','System Operator','Sweeper','Security Gu
 function appCard(a){var roleOptions=a.department=='Cafe'?['Cafe Manager','Cashier','Barista','Cook','Service Staff','Cleaner','Other']:ROLES;return '<div class="apc"><img class="eph big" src="'+a.photo+'" alt="Photo of '+esc(a.name)+'"><div class="ainfo"><b>'+esc(a.name)+'</b><span>'+esc(a.mobile)+' · Aadhaar '+maskA(a.aadhaar)+'</span><span>Emergency contact: '+esc(a.emergency?a.emergency+(a.emergencyName?' ('+a.emergencyName+')':''):'Not provided')+'</span><span>'+esc(a.address)+'</span><span>Applied '+fdate(a.date)+'</span><div class="rowact"><button type="button" class="btn sm alt" data-ej="doc" data-id="'+a.id+'">Aadhaar</button>'+(a.panDoc?'<button type="button" class="btn sm alt" data-ej="appdoc" data-id="'+a.id+'" data-type="pan">PAN</button>':'')+(a.licenseDoc?'<button type="button" class="btn sm alt" data-ej="appdoc" data-id="'+a.id+'" data-type="license">Licence</button>':'')+'</div></div>'+
  '<div class="aact"><div class="fld"><label for="ar-'+a.id+'">Role</label><select id="ar-'+a.id+'">'+roleOptions.map(function(r){return '<option>'+r+'</option>'}).join('')+'</select></div><div class="fld"><label for="as-'+a.id+'">Monthly salary (₹)</label><input id="as-'+a.id+'" type="number" min="0" inputmode="numeric" placeholder="0"></div><div class="arow"><button type="button" class="btn green" data-ej="approve" data-id="'+a.id+'">Approve</button><button type="button" class="btn sm alt" data-ej="pending" data-id="'+a.id+'">Keep Pending</button><button type="button" class="btn danger" data-ej="delete" data-id="'+a.id+'">Delete</button></div></div></div>'}
 PAGES.employees=function(){setTimeout(function(){syncApps(false)},50);
+ if (!canPage('employees')) return head('Employee Management') + '<div class="note bad">Access denied: Employee management is restricted to Manager and Owner accounts.</div>';
  FORMS.mf=function(v){var ph=digits(v.phone),em=digits(v.emergency);if(!/^[6-9]\d{9}$/.test(ph))return 'ERROR: Enter the employee\'s own 10-digit mobile number';if(!/^[6-9]\d{9}$/.test(em))return 'ERROR: Enter a valid 10-digit emergency contact number';if(em==ph)return 'ERROR: Emergency contact must be a different number';if(S.employees.some(function(x){return digits(x.phone)==ph}))return 'ERROR: An employee with this mobile number already exists';S.employees.push({id:nid('M',S.employees),name:v.name,role:v.role,phone:ph,emergency:em,emergencyName:(v.emergencyName||'').trim(),address:(v.address||'').trim(),salary:+v.salary,joined:today(),joinedAt:new Date().toISOString()});return 'Employee added. Login ID: '+(RPFX[v.role]||'EM')+'-'+ph};
  var pend=S.applications.filter(function(a){return a.status=='Pending'&&(a.department||'Water Plant')!='Cafe'});
  var inv='<div class="card inv"><h3>Invite a new employee</h3><p class="pdesc">Send a joining link on WhatsApp. The employee fills personal details, Aadhaar and PAN details, uploads Aadhaar/PAN/Driving Licence documents, takes a live photo, and submits. You review and approve the application.</p>'+
@@ -1339,12 +1688,19 @@ PAGES.employees=function(){setTimeout(function(){syncApps(false)},50);
   (INVLINK?'<div class="linkbox"><input id="inv-link" readonly value="'+esc(INVLINK.url)+'" aria-label="Joining link"><button type="button" class="btn alt" data-ej="copyinv">Copy link</button><a class="btn wa" target="_blank" rel="noopener" href="'+waInvite()+'">Send on WhatsApp</a></div>':'')+'</div>';
  var ap='<div class="card"><div class="aphead"><h3>Joining applications<span class="cnt">'+pend.length+' pending</span></h3><div><button type="button" class="btn sm" data-ej="refresh">Refresh</button> <button type="button" class="btn alt sm" data-ej="import">Import file</button><input type="file" id="ej-file" accept=".txt,.json,text/plain,application/json" hidden multiple></div></div>'+
   (pend.length?pend.map(appCard).join(''):'<p class="pdesc" style="margin:10px 0 0">No pending applications. When an employee submits the joining form, it appears here automatically.</p>')+'</div>';
+ var canViewSal = canAct('view_salary');
+ var empCols = canViewSal ? ['Name','Login ID','Role','Phone','Emergency','Salary',''] : ['Name','Login ID','Role','Phone','Emergency',''];
  return head('Employee Management')+inv+ap+'<h3 style="margin:18px 0 0">Add employee manually</h3>'+formCard([{k:'name',l:'Name'},{k:'role',l:'Role',t:'select',o:ROLES},{k:'phone',l:'Employee mobile number (login ID)',t:'tel'},{k:'emergency',l:'Emergency contact number',t:'tel'},{k:'emergencyName',l:'Emergency contact person (optional)',r:false},{k:'address',l:'Employee address'},{k:'salary',l:'Monthly salary (₹)',t:'number'}],'Add Employee','mf')+
-  '<div class="note" style="margin:8px 0 0">Employee login ID = role code + mobile number, e.g. Helper HP-9848012345, Operator OP-9848012345, Driver DR-…, Salesman SM-…</div><h3 style="margin:18px 0 0">All employees</h3>'+table(['Name','Login ID','Role','Phone','Emergency','Salary',''],S.employees.filter(function(e){return (e.department||'Water Plant')!='Cafe'}).map(function(e){return [(e.photo?'<img class="eph" src="'+e.photo+'" alt="">':'')+esc(e.name),'<b>'+esc(empCode(e))+'</b>',esc(e.role),esc(e.phone),esc(e.emergency||'-'),inr(e.salary),'<div class="rowact"><button type="button" class="btn sm alt" data-ej="profile" data-id="'+e.id+'">Profile</button>'+del('employees',e.id)+'</div>']}))};
-function showDoc(id){var o=S.applications.filter(function(x){return x.id==id})[0]||S.employees.filter(function(x){return x.id==id})[0];if(!o||!o.doc){toast('No Aadhaar document uploaded');return}
+  '<div class="note" style="margin:8px 0 0">Employee login ID = role code + mobile number, e.g. Helper HP-9848012345, Operator OP-9848012345, Driver DR-…, Salesman SM-…</div><h3 style="margin:18px 0 0">All employees</h3>'+table(empCols,S.employees.filter(function(e){return (e.department||'Water Plant')!='Cafe'}).map(function(e){
+   var r = [(e.photo?'<img class="eph" src="'+e.photo+'" alt="">':'')+esc(e.name),'<b>'+esc(empCode(e))+'</b>',esc(e.role),esc(e.phone),esc(e.emergency||'-')];
+   if (canViewSal) r.push(inr(e.salary));
+   r.push('<div class="rowact"><button type="button" class="btn sm alt" data-ej="profile" data-id="'+e.id+'">Profile</button>'+del('employees',e.id)+'</div>');
+   return r;
+  }))};
+function showDoc(id){if(!canAct('view_identities')){toast('Access denied: Identity documents are owner-only.');return;}var o=S.applications.filter(function(x){return x.id==id})[0]||S.employees.filter(function(x){return x.id==id})[0];if(!o||!o.doc){toast('No Aadhaar document uploaded');return}
  openModal('<h3>Aadhaar card</h3>'+(/^data:application\/pdf/.test(o.doc)?'<p><a class="btn" href="'+o.doc+'" download="aadhaar-'+esc(o.name)+'.pdf">Download PDF</a></p>':'<img class="docimg" src="'+o.doc+'" alt="Aadhaar card">')+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Close</button></div>',true)}
-function showApplicationDoc(id,type){var a=S.applications.filter(function(x){return x.id==id})[0];if(!a)return;var data=type=='pan'?a.panDoc:a.licenseDoc;if(!data){toast('Document not uploaded');return}var title=type=='pan'?'PAN card':'Driving Licence';openModal('<h3>'+title+'</h3>'+(/^data:application\/pdf/.test(data)?'<p><a class="btn" href="'+data+'" download="'+type+'-'+esc(a.name)+'.pdf">Download PDF</a></p>':'<img class="docimg" src="'+data+'" alt="'+title+'">')+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Close</button></div>',true)}
-function showEmployeeDoc(id,type){var e=S.employees.filter(function(x){return x.id==id})[0];if(!e)return;var field=type=='aadhaar'?'doc':type=='pan'?'panDoc':'licenseDoc',data=e[field];if(!data){toast('Document not uploaded');return}var title=type=='aadhaar'?'Aadhaar card':type=='pan'?'PAN card':'Driving Licence',pdf=/^data:application\/pdf/i.test(data),ext=pdf?'pdf':(/^data:image\/png/i.test(data)?'png':(/^data:image\/webp/i.test(data)?'webp':'jpg')),filename=type+'-'+String(e.name||'employee').replace(/[^a-z0-9_-]/gi,'_')+'.'+ext;openModal('<div class="ph"><h3 style="margin:0">'+title+'</h3><a class="btn green" href="'+data+'" download="'+filename+'">Download '+(pdf?'PDF':'Image')+'</a></div>'+(pdf?'<iframe title="'+title+' preview" src="'+data+'" style="width:100%;height:65vh;border:1px solid var(--line);border-radius:12px"></iframe>':'<img class="docimg" src="'+data+'" alt="'+title+'" style="max-height:65vh;object-fit:contain">')+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Close</button></div>',true)}
+function showApplicationDoc(id,type){if(!canAct('view_identities')){toast('Access denied: Identity documents are owner-only.');return;}var a=S.applications.filter(function(x){return x.id==id})[0];if(!a)return;var data=type=='pan'?a.panDoc:a.licenseDoc;if(!data){toast('Document not uploaded');return}var title=type=='pan'?'PAN card':'Driving Licence';openModal('<h3>'+title+'</h3>'+(/^data:application\/pdf/.test(data)?'<p><a class="btn" href="'+data+'" download="'+type+'-'+esc(a.name)+'.pdf">Download PDF</a></p>':'<img class="docimg" src="'+data+'" alt="'+title+'">')+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Close</button></div>',true)}
+function showEmployeeDoc(id,type){if(!canAct('view_identities')){toast('Access denied: Identity documents are owner-only.');return;}var e=S.employees.filter(function(x){return x.id==id})[0];if(!e)return;var field=type=='aadhaar'?'doc':type=='pan'?'panDoc':'licenseDoc',data=e[field];if(!data){toast('Document not uploaded');return}var title=type=='aadhaar'?'Aadhaar card':type=='pan'?'PAN card':'Driving Licence',pdf=/^data:application\/pdf/i.test(data),ext=pdf?'pdf':(/^data:image\/png/i.test(data)?'png':(/^data:image\/webp/i.test(data)?'webp':'jpg')),filename=type+'-'+String(e.name||'employee').replace(/[^a-z0-9_-]/gi,'_')+'.'+ext;openModal('<div class="ph"><h3 style="margin:0">'+title+'</h3><a class="btn green" href="'+data+'" download="'+filename+'">Download '+(pdf?'PDF':'Image')+'</a></div>'+(pdf?'<iframe title="'+title+' preview" src="'+data+'" style="width:100%;height:65vh;border:1px solid var(--line);border-radius:12px"></iframe>':'<img class="docimg" src="'+data+'" alt="'+title+'" style="max-height:65vh;object-fit:contain">')+'<div class="dact"><button type="button" class="btn alt" data-nb="close">Close</button></div>',true)}
 function showProfile(id){
  var e=S.employees.filter(function(x){return x.id==id})[0];if(!e)return;
  var joined=e.joinedAt?new Date(e.joinedAt).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'medium'}):(e.joined?fdate(e.joined):'Not recorded');
@@ -1353,7 +1709,7 @@ function showProfile(id){
  view.innerHTML='<div class="ph"><div><h2>Employee Profile</h2><p class="pdesc">Employee information and documents</p></div><div class="rowact"><button type="button" class="btn" data-ej="edit-details" data-id="'+e.id+'">✎ Edit Details</button><button type="button" class="btn alt" data-ej="backprofile">← Back to Employee Management</button></div></div>'+
  '<section class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">'+(e.photo?'<img class="eph big" style="width:112px;height:112px" src="'+e.photo+'" alt="Employee photo">':'<div class="eph big" style="display:grid;place-items:center">No photo</div>')+'<div><h2 style="margin:0 0 5px">'+esc(e.name)+'</h2><p class="pdesc">'+esc(e.role)+'</p><span class="pill p-blue">Employee ID: '+esc(e.id)+'</span><div style="margin-top:10px"><label class="btn sm alt" for="emp-upload-photo">Change Photo</label><input id="emp-upload-photo" data-empdoc="photo" data-id="'+e.id+'" type="file" accept="image/jpeg,image/png,image/webp" hidden></div></div></div></section>'+
  '<section class="card" style="margin-bottom:14px"><h3>Personal & Employment Details</h3><div class="pf" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;margin-top:16px">'+
- '<div><small class="muted">Employee ID</small><br><b>'+esc(e.id)+'</b></div><div><small class="muted">Login ID (role + mobile)</small><br><b>'+esc(empCode(e))+'</b></div><div><small class="muted">Joining date & time</small><br><b>'+esc(joined)+'</b></div><div><small class="muted">Mobile number</small><br><b>'+esc(e.phone||'Not provided')+'</b></div><div><small class="muted">Emergency contact</small><br><b>'+esc(e.emergency?e.emergency+(e.emergencyName?' ('+e.emergencyName+')':''):'Not provided')+'</b></div><div><small class="muted">Monthly salary</small><br><b>'+inr(e.salary)+'</b></div><div style="grid-column:1/-1"><small class="muted">Full address</small><br><b>'+esc(e.address||'Not provided')+'</b></div><div><small class="muted">Aadhaar number</small><br><b>'+maskA(e.aadhaar)+'</b></div><div><small class="muted">PAN number</small><br><b>'+esc(e.pan||'Not provided')+'</b></div><div><small class="muted">Driving Licence number</small><br><b>'+esc(e.licenseNo||'Not provided')+'</b></div><div><small class="muted">Application ID</small><br><b>'+esc(e.app||'Manual entry')+'</b></div></div>'+
+ '<div><small class="muted">Employee ID</small><br><b>'+esc(e.id)+'</b></div><div><small class="muted">Login ID (role + mobile)</small><br><b>'+esc(empCode(e))+'</b></div><div><small class="muted">Joining date & time</small><br><b>'+esc(joined)+'</b></div><div><small class="muted">Mobile number</small><br><b>'+esc(e.phone||'Not provided')+'</b></div><div><small class="muted">Emergency contact</small><br><b>'+esc(e.emergency?e.emergency+(e.emergencyName?' ('+e.emergencyName+')':''):'Not provided')+'</b></div><div><small class="muted">Monthly salary</small><br><b>'+(canAct('view_salary')?inr(e.salary):'Confidential')+'</b></div><div style="grid-column:1/-1"><small class="muted">Full address</small><br><b>'+esc(e.address||'Not provided')+'</b></div><div><small class="muted">Aadhaar number</small><br><b>'+(canAct('view_identities')?maskA(e.aadhaar):'••••••••••••')+'</b></div><div><small class="muted">PAN number</small><br><b>'+(canAct('view_identities')?esc(e.pan||'Not provided'):'••••••••••')+'</b></div><div><small class="muted">Driving Licence number</small><br><b>'+(canAct('view_identities')?esc(e.licenseNo||'Not provided'):'•••••••••••••••')+'</b></div><div><small class="muted">Application ID</small><br><b>'+esc(e.app||'Manual entry')+'</b></div></div>'+
  '<div id="emp-edit-panel" hidden style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)"><h3>Edit Employee Details</h3><p class="pdesc">Correct the details below and save. Employee ID and joining date cannot be changed.</p><form id="employee-edit-form" data-id="'+e.id+'" class="form" style="margin-top:14px">'+
  '<div class="fld"><label>Employee name</label><input name="name" required maxlength="80" value="'+esc(e.name)+'"></div>'+
  '<div class="fld"><label>Role</label><select name="role">'+ROLES.map(function(r){return '<option value="'+esc(r)+'" '+(r==e.role?'selected':'')+'>'+esc(r)+'</option>'}).join('')+'</select></div>'+
@@ -1365,9 +1721,11 @@ function showProfile(id){
  '<div class="fld"><label>PAN number</label><input name="pan" maxlength="10" value="'+esc(e.pan||'')+'" placeholder="ABCDE1234F"></div>'+
  '<div class="fld"><label>Driving Licence number</label><input name="licenseNo" maxlength="30" value="'+esc(e.licenseNo||'')+'"></div>'+
  '<div class="rowact" style="grid-column:1/-1"><button type="submit" class="btn">Save Changes</button><button type="button" class="btn alt" data-ej="cancel-edit" data-id="'+e.id+'">Cancel</button></div></form></div></section>'+
- '<section class="card"><h3>Uploaded Documents</h3><p class="pdesc">You can view, download, upload a missing document, or replace an incorrect file.</p><div class="pf" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px">'+docBtn('Aadhaar Card','aadhaar',!!e.doc)+docBtn('PAN Card','pan',!!e.panDoc)+docBtn('Driving Licence','license',!!e.licenseDoc)+'</div></section>'+hrCard(e);
+ (canAct('view_identities') ?
+   '<section class="card"><h3>Uploaded Documents</h3><p class="pdesc">You can view, download, upload a missing document, or replace an incorrect file.</p><div class="pf" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px">'+docBtn('Aadhaar Card','aadhaar',!!e.doc)+docBtn('PAN Card','pan',!!e.panDoc)+docBtn('Driving Licence','license',!!e.licenseDoc)+'</div></section>' :
+   '<section class="card"><h3>Uploaded Documents</h3><p class="pdesc muted">Identity and verification documents are accessible strictly by the Owner account.</p></section>')+hrCard(e);
 }
-function downloadEmployeeDoc(id,type){var e=S.employees.filter(function(x){return x.id==id})[0];if(!e)return;var field=type=='aadhaar'?'doc':type=='pan'?'panDoc':'licenseDoc',data=e[field];if(!data){toast('Document not uploaded');return}var pdf=/^data:application\/pdf/i.test(data),ext=pdf?'pdf':(/^data:image\/png/i.test(data)?'png':(/^data:image\/webp/i.test(data)?'webp':'jpg')),filename=type+'-'+String(e.name||'employee').replace(/[^a-z0-9_-]/gi,'_')+'.'+ext;var a=document.createElement('a');a.href=data;a.download=filename;document.body.appendChild(a);a.click();a.remove();toast('Document download started')}
+function downloadEmployeeDoc(id,type){if(!canAct('view_identities')){toast('Access denied: Identity documents are owner-only.');return;}var e=S.employees.filter(function(x){return x.id==id})[0];if(!e)return;var field=type=='aadhaar'?'doc':type=='pan'?'panDoc':'licenseDoc',data=e[field];if(!data){toast('Document not uploaded');return}var pdf=/^data:application\/pdf/i.test(data),ext=pdf?'pdf':(/^data:image\/png/i.test(data)?'png':(/^data:image\/webp/i.test(data)?'webp':'jpg')),filename=type+'-'+String(e.name||'employee').replace(/[^a-z0-9_-]/gi,'_')+'.'+ext;var a=document.createElement('a');a.href=data;a.download=filename;document.body.appendChild(a);a.click();a.remove();toast('Document download started')}
 function addApplication(o){
  if(!o||o.srjoin!==1)return 'bad';
  var id=String(o.id||''),nm=String(o.name||'').trim(),mb=digits(o.mobile),ad=String(o.address||'').trim(),aa=String(o.aadhaar||'').replace(/\D/g,''),ph=String(o.photo||''),dc=String(o.doc||''),pan=String(o.pan||'').toUpperCase().trim(),pd=String(o.panDoc||''),ln=String(o.licenseNo||'').toUpperCase().trim(),ld=String(o.licenseDoc||'');
@@ -1907,8 +2265,83 @@ function backupExport(){
 }
 /* ---------- router & events ---------- */
 var view=$('#view');
-function buildTabs(cur){var T=[['dashboard','Home','home'],['new-bill','New Bill','plus'],['bills','Bills','doc'],['payments','Payments','card']];
- $('#tabbar').innerHTML=T.map(function(t){return '<a href="#'+t[0]+'" class="'+(t[0]==cur?'on':'')+'">'+ic(t[2])+t[1]+'</a>'}).join('')+'<button type="button" id="tabmenu">'+ic('list')+'More</button>'}
+function buildTabs(cur){
+  var T;
+  if (CURRENT_ROLE === 'employee') {
+    T = [['dashboard','My Day','home'],['my-route','My Route','truck'],['day-close','Day Close','wallet']];
+  } else {
+    T = [['dashboard','Home','home'],['new-bill','New Bill','plus'],['bills','Bills','doc'],['payments','Payments','card']];
+  }
+  var visible = T.filter(function(t){ return canPage(t[0]); });
+  var bar = $('#tabbar');
+  if (bar) {
+    bar.innerHTML = visible.map(function(t){
+      return '<a href="#'+t[0]+'" class="'+(t[0]==cur?'on':'')+'">'+ic(t[2])+t[1]+'</a>';
+    }).join('') + '<button type="button" id="tabmenu">'+ic('list')+'More</button>';
+  }
+}
+
+var AUTH_VERIFYING = false;
+var AUTH_VERIFIED_ONCE = false;
+
+function getAccessToken() {
+  var sess = getSession();
+  return (sess && (sess.access_token || (sess.session && sess.session.access_token))) || null;
+}
+
+async function verifyLiveProfile() {
+  var token = getAccessToken();
+  if (!token) {
+    setSession(null);
+    return false;
+  }
+  AUTH_VERIFYING = true;
+  try {
+    var res = await fetch('/api/auth/me', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) {
+      AUTH_VERIFYING = false;
+      AUTH_VERIFIED_ONCE = false;
+      setSession(null);
+      toast('Session expired or unauthorized. Please sign in again.');
+      location.hash = '#login';
+      renderLogin();
+      return false;
+    }
+    var data = await res.json();
+    if (!data || !data.ok || !data.profile || !data.profile.active) {
+      AUTH_VERIFYING = false;
+      AUTH_VERIFIED_ONCE = false;
+      setSession(null);
+      toast('Account inactive or unauthorized.');
+      location.hash = '#login';
+      renderLogin();
+      return false;
+    }
+    setCurrentRole(data.profile.role);
+    setCurrentProfile(data.profile);
+    var sess = getSession();
+    if (sess && sess.user) {
+      sess.user.role = data.profile.role;
+      sess.user.full_name = data.profile.full_name;
+      sess.user.employee_id = data.profile.employee_id;
+      sess.user.duties = data.profile.duties;
+    }
+    updateUserBadge(data.profile);
+    AUTH_VERIFIED_ONCE = true;
+    AUTH_VERIFYING = false;
+    return true;
+  } catch(e) {
+    AUTH_VERIFYING = false;
+    AUTH_VERIFIED_ONCE = false;
+    setSession(null);
+    location.hash = '#login';
+    renderLogin();
+    return false;
+  }
+}
+
 function render(){
  if((location.hash||'').indexOf('#login')==0){return renderLogin()}
  if((location.hash||'').indexOf('#join=')==0){return renderJoin()}
@@ -1919,22 +2352,37 @@ function render(){
    location.hash = '#login';
    return renderLogin();
  }
- document.body.classList.remove('public');var id=(location.hash||'#dashboard').slice(1);
+
+ // Fail closed: Before rendering any page after load, verify token with /api/auth/me
+ if (!AUTH_VERIFIED_ONCE) {
+   if (!AUTH_VERIFYING) {
+     verifyLiveProfile().then(function(ok) {
+       if (ok) render();
+     });
+   }
+   var v = $('#view');
+   if (v) {
+     v.innerHTML = '<div style="text-align:center;padding:120px 20px;"><div class="spinner" style="margin:0 auto 16px;"></div><h3 style="margin:0 0 8px;">Verifying session security...</h3><p style="color:var(--muted);margin:0;">Validating user role and database profile</p></div>';
+   }
+   return;
+ }
+
+ document.body.classList.remove('public');
+ var id=(location.hash||'#dashboard').slice(1);
  if(id.indexOf('cafe-') == 0 && CURRENT_ROLE == 'employee'){
    toast('Access restricted: Cafe is not accessible to employee accounts.');
-   id = 'dashboard';
-   location.hash = '#dashboard';
- }
- if(id == 'users' && CURRENT_ROLE == 'employee'){
-   toast('Access restricted: User management is only accessible to manager and owner accounts.');
-   id = 'dashboard';
-   location.hash = '#dashboard';
- }
- if((id == 'route-planner' || id == 'production-plan') && CURRENT_ROLE == 'employee'){
-   toast('Access restricted: Planning screens are reserved for managers and owners.');
    id = 'my-route';
    location.hash = '#my-route';
  }
+
+ // Role-based access control with canPage
+ if (!canPage(id)) {
+   toast('Access restricted: You do not have permission to view this page.');
+   var targetHome = (CURRENT_ROLE === 'employee') ? 'my-route' : 'dashboard';
+   location.hash = '#' + targetHome;
+   id = targetHome;
+ }
+
  if (id === 'my-route' && CURRENT_ROLE === 'employee' && !window.__LOADING_ROUTE && typeof navigator !== 'undefined' && navigator.onLine !== false) {
    window.__LOADING_ROUTE = true;
    loadMyRouteFromSupabase().then(function(res) {
@@ -1949,12 +2397,36 @@ function render(){
      window.__LOADING_ROUTE = false;
    });
  }
- if(!PAGES[id])id='dashboard';if(id!='new-bill')EDITID=null;if(id!='customers')CV=null;
- if(id=='backup')BACKUP_MODE='daily';buildNav(id);buildTabs(id);closeMenu();document.body.classList.remove('searching');var pt=$('#ptitle');if(pt)pt.textContent=TITLES[id]||'';view.innerHTML=PAGES[id]();view.scrollTop=0;
- if(id=='new-bill')billInit();
+
+ if(!PAGES[id]) id = (CURRENT_ROLE === 'employee' ? 'my-route' : 'dashboard');
+ if(id!='new-bill') EDITID=null;
+ if(id!='customers') CV=null;
+ if(id=='backup') BACKUP_MODE='daily';
+ buildNav(id);
+ buildTabs(id);
+ closeMenu();
+ document.body.classList.remove('searching');
+ var pt=$('#ptitle');
+ if(pt) {
+   var title = TITLES[id] || '';
+   if (id === 'dashboard' && CURRENT_ROLE === 'employee') title = 'My Day';
+   pt.textContent = title;
+ }
+ var vEl = $('#view');
+ if (vEl && typeof PAGES[id] === 'function') {
+   vEl.innerHTML = PAGES[id]();
+   vEl.scrollTop = 0;
+ }
+ if(id=='new-bill') billInit();
  var nb=S.stock&&Object.keys(stockLevels()).filter(function(k){return stockLevels()[k]<=S.settings.low*.6}).length;
- $('#nbadge').textContent=nb||'';$('#nbadge').hidden=!nb;
- document.title='Larven Enterprises BMS';$('#brandname').textContent=S.settings.name;
+ var nbadge = $('#nbadge');
+ if (nbadge) {
+   nbadge.textContent = nb||'';
+   nbadge.hidden = !nb;
+ }
+ document.title='Larven Enterprises BMS';
+ var bname = $('#brandname');
+ if (bname) bname.textContent = S.settings.name;
 }
 document.addEventListener('submit',function(e){
  var f=e.target;e.preventDefault();
@@ -2150,12 +2622,12 @@ PAGES.diesel=function(){FORMS.df=function(v){var a=+v.amount;if(!(a>0))return 'E
  table(['Date','Vehicle','Amount','Status','Approved / decided by','Bill',''],l.slice().reverse().map(function(e){var s=dstat(e);return [e.date,esc(e.note),inr(e.amount),statPill(s),s=='Pending'?'-':esc(e.approvedBy||'—'),vdoc('expenses',e.id),del('expenses',e.id)]}))};
 PAGES['diesel-approvals']=function(){var l=S.expenses.filter(function(e){return e.cat=='Diesel'}),pend=l.filter(function(e){return dstat(e)=='Pending'}).slice().reverse(),done=l.filter(function(e){return dstat(e)!='Pending'}).slice().reverse();
  return head('Diesel Approvals','')+kp([['Waiting for approval',pend.length],['Pending amount',inr(sum(pend,function(e){return e.amount}))],['Approved',done.filter(function(e){return dstat(e)=='Approved'}).length],['Rejected',done.filter(function(e){return dstat(e)=='Rejected'}).length]])+
- '<h3 style="margin:8px 0">Waiting for approval</h3>'+table(['Date','Vehicle','Amount','Submitted by','Bill','Action'],pend.map(function(e){return [e.date,esc(e.note),inr(e.amount),esc(e.submittedBy||'-'),vdoc('expenses',e.id),'<div class="rowact"><button type="button" class="btn sm green" data-dap="ok" data-id="'+e.id+'">✓ Approve</button><button type="button" class="btn sm danger" data-dap="no" data-id="'+e.id+'">✕ Reject</button></div>']}),'Nothing is waiting for approval.')+
+ '<h3 style="margin:8px 0">Waiting for approval</h3>'+table(['Date','Vehicle','Amount','Submitted by','Bill','Action'],pend.map(function(e){return [e.date,esc(e.note),inr(e.amount),esc(e.submittedBy||'-'),vdoc('expenses',e.id),(canAct('approve_diesel')?'<div class="rowact"><button type="button" class="btn sm green" data-dap="ok" data-id="'+e.id+'">✓ Approve</button><button type="button" class="btn sm danger" data-dap="no" data-id="'+e.id+'">✕ Reject</button></div>':'<span class="muted">Read-only</span>')]}),'Nothing is waiting for approval.')+
  '<h3 style="margin:18px 0 8px">Decided</h3>'+table(['Date','Vehicle','Amount','Status','Decided by','Reason / note','Bill'],done.map(function(e){return [e.date,esc(e.note),inr(e.amount),statPill(dstat(e)),esc(e.approvedBy||'—'),esc(e.reason||''),vdoc('expenses',e.id)]}),'No decisions yet.')};
-document.addEventListener('click',function(e){var t=e.target.closest('[data-dap]');if(!t)return;var r=S.expenses.filter(function(x){return x.id==t.dataset.id})[0];if(!r)return;
+document.addEventListener('click',function(e){var t=e.target.closest('[data-dap]');if(!t)return;if(!canAct('approve_diesel')){toast('Permission denied: Only managers and owners can approve or reject diesel expenses.');return;}var r=S.expenses.filter(function(x){return x.id==t.dataset.id})[0];if(!r)return;
  if(t.dataset.dap=='ok'){r.status='Approved';r.approvedBy=cafeActorName();r.decidedAt=new Date().toISOString();r.reason='';save();toast('Approved by '+r.approvedBy);render()}
  else openModal('<h3>Reject diesel expense</h3><p class="pdesc">'+esc(r.note)+' · '+inr(r.amount)+' · '+esc(r.date)+'</p><form id="dapform" data-id="'+r.id+'" class="form" style="grid-template-columns:1fr"><div class="fld"><label for="dap-r">Reason (optional)</label><textarea id="dap-r" class="bill-reason" maxlength="300" placeholder="Why is this rejected?"></textarea></div><div class="dact"><button type="button" class="btn alt" data-nb="close">Go back</button><button type="submit" class="btn danger">Reject</button></div></form>')});
-document.addEventListener('submit',function(e){if(e.target.id!='dapform')return;e.preventDefault();var r=S.expenses.filter(function(x){return x.id==e.target.dataset.id})[0];if(!r)return;r.status='Rejected';r.approvedBy=cafeActorName();r.decidedAt=new Date().toISOString();r.reason=($('#dap-r').value||'').trim();save();closeModal();toast('Rejected');render()},true);
+document.addEventListener('submit',function(e){if(e.target.id!='dapform')return;e.preventDefault();if(!canAct('approve_diesel')){toast('Permission denied: Only managers and owners can approve or reject diesel expenses.');return;}var r=S.expenses.filter(function(x){return x.id==e.target.dataset.id})[0];if(!r)return;r.status='Rejected';r.approvedBy=cafeActorName();r.decidedAt=new Date().toISOString();r.reason=($('#dap-r').value||'').trim();save();closeModal();toast('Rejected');render()},true);
 PAGES.expenses=function(){FORMS.ef=function(v){var a=+v.amount;if(!(a>0))return 'ERROR: Enter the amount';var ph=digits(v.pphone);if(v.pphone&&ph.length!=10)return 'ERROR: Phone number must be 10 digits';S.expenses.push({id:nid('E',S.expenses),date:v.date,cat:v.cat,note:v.note,amount:a,payee:(v.payee||'').trim(),pphone:ph,bill:takeUpl('ebill')});return 'Expense added'};
  var l=S.expenses.filter(function(e){return e.cat!='Diesel'});
  return head('Other Expenses')+kp([['Total',inr(sum(l,function(e){return e.amount}))],['Entries',l.length]])+formCard([{k:'cat',l:'Category',t:'select',o:['Electricity','Repairs','Salary','Packaging','Chemicals','Rent','Other']},{k:'note',l:'Details',r:false},{k:'amount',l:'Amount (₹)',t:'number'},{k:'payee',l:'Paid to (person / vendor name)'},{k:'pphone',l:'Phone number of person / vendor',t:'tel',r:false},{k:'date',l:'Date',t:'date'},{k:'ebill',l:'Upload bill / receipt (photo or PDF)',t:'file',r:false}],'Add Expense','ef')+
@@ -2273,10 +2745,14 @@ function ctRefresh(){var q=CT.q.trim().toLowerCase(),l=S.contacts.filter(functio
 
 /* ---------- Backup & Restore ---------- */
 var _bkPage=PAGES.backup;
-PAGES.backup=function(){return _bkPage().replace('Backup & Data Export','Backup & Restore')+'<section class="card" style="margin-top:14px"><div class="card-h"><div><h3>Full backup &amp; restore (all data)</h3><p class="pdesc">Download one file with every record, photo and setting. Use it to move to a new phone / computer or to restore after a problem.</p></div><span class="pill p-amber">JSON file</span></div>'+
- '<div class="rowact"><button type="button" class="btn green" data-bkp="dl">⇩ Download full backup</button><button type="button" class="btn alt" data-bkp="pick">⇧ Restore from backup file</button><input type="file" id="bkp-file" accept=".json,application/json" hidden></div><div class="note warn" style="margin-top:10px">Restoring replaces everything currently in this browser with the contents of the backup file. Download a fresh backup first if unsure.</div></section>'};
-document.addEventListener('click',function(e){var t=e.target.closest('[data-bkp]');if(!t)return;if(t.dataset.bkp=='dl'){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download='Larven-Enterprises-backup-'+today()+'.json';document.body.appendChild(a);a.click();a.remove();toast('Full backup downloaded')}else if(t.dataset.bkp=='pick')$('#bkp-file').click()});
-document.addEventListener('change',function(e){if(e.target.id!='bkp-file')return;var f=e.target.files&&e.target.files[0];if(!f)return;f.text().then(function(tx){var o=null;try{o=JSON.parse(tx)}catch(x){}
+PAGES.backup=function(){
+  if(!canPage('backup')) return head('Backup & Restore') + '<div class="note bad">Access denied: Backup & Restore is restricted to Owner accounts only.</div>';
+  var canRes = canAct('restore_backup');
+  var resBtn = canRes ? '<button type="button" class="btn alt" data-bkp="pick">⇧ Restore from backup file</button>' : '<button type="button" class="btn alt" disabled style="opacity:0.5;cursor:not-allowed;" title="Owner only">⇧ Restore disabled (Owner only)</button>';
+  return _bkPage().replace('Backup & Data Export','Backup & Restore')+'<section class="card" style="margin-top:14px"><div class="card-h"><div><h3>Full backup &amp; restore (all data)</h3><p class="pdesc">Download one file with every record, photo and setting. Use it to move to a new phone / computer or to restore after a problem.</p></div><span class="pill p-amber">JSON file</span></div>'+
+ '<div class="rowact"><button type="button" class="btn green" data-bkp="dl">⇩ Download full backup</button>'+resBtn+'<input type="file" id="bkp-file" accept=".json,application/json" hidden></div><div class="note warn" style="margin-top:10px">'+(canRes?'Restoring replaces everything currently in this browser with the contents of the backup file. Download a fresh backup first if unsure.':'Only the Owner account has permission to restore database backups.')+'</div></section>'};
+document.addEventListener('click',function(e){var t=e.target.closest('[data-bkp]');if(!t)return;if(t.dataset.bkp=='dl'){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download='Larven-Enterprises-backup-'+today()+'.json';document.body.appendChild(a);a.click();a.remove();toast('Full backup downloaded')}else if(t.dataset.bkp=='pick'){if(!canAct('restore_backup')){toast('Permission denied: Restoring backups is restricted to the Owner account only.');return;}$('#bkp-file').click()}});
+document.addEventListener('change',function(e){if(e.target.id!='bkp-file')return;if(!canAct('restore_backup')){toast('Permission denied: Restoring backups is restricted to the Owner account only.');e.target.value='';return;}var f=e.target.files&&e.target.files[0];if(!f)return;f.text().then(function(tx){var o=null;try{o=JSON.parse(tx)}catch(x){}
  if(!o||!Array.isArray(o.bills)||!Array.isArray(o.customers)||!o.settings){toast('This is not a valid Larven Enterprises backup file');return}
  if(!confirm('Restore this backup? All current data in this browser (bills: '+S.bills.length+') will be replaced by the backup ('+o.bills.length+' bills, '+o.customers.length+' customers).'))return;
  try{localStorage.setItem(KEY,tx)}catch(x){toast('Could not restore: browser storage is full');return}toast('Backup restored. Reloading…');setTimeout(function(){location.reload()},600)});e.target.value=''});
@@ -2352,6 +2828,12 @@ PAGES['price-variance'] = priceVarianceReport;
 
 /* ---------- Authentication, Inactivity & User Management ---------- */
 var CURRENT_SESSION = null;
+try {
+  if (typeof localStorage !== 'undefined') {
+    var rawSess = localStorage.getItem('larven_auth_session');
+    if (rawSess) CURRENT_SESSION = JSON.parse(rawSess);
+  }
+} catch(e) {}
 var INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 var inactivityTimer = null;
 
@@ -2365,16 +2847,23 @@ function setSession(sess) {
     if (typeof OutboxDB !== 'undefined' && OutboxDB.setSession) {
       OutboxDB.setSession(sess);
     }
+    if (typeof localStorage !== 'undefined') {
+      if (sess) {
+        localStorage.setItem('larven_auth_session', JSON.stringify(sess));
+      } else {
+        localStorage.removeItem('larven_auth_session');
+      }
+    }
     if (sess && sess.user) {
-      setCurrentRole(sess.user.role || 'employee');
-      setCurrentProfile(sess.user);
       updateUserBadge(sess.user);
     } else if (!sess) {
       if (typeof OutboxDB !== 'undefined' && OutboxDB.clearSession) {
         OutboxDB.clearSession();
       }
-      setCurrentRole('owner');
+      setCurrentRole(null);
+      setCurrentProfile(null);
       updateUserBadge(null);
+      AUTH_VERIFIED_ONCE = false;
     }
   } catch(e) {}
 }
@@ -2510,14 +2999,22 @@ async function submitLogin(phone, password, turnstileToken) {
     }
     setSession(data);
     resetInactivityTimer();
-    toast('Welcome back, ' + (data.user && data.user.full_name ? data.user.full_name : 'User'));
-    if (data.user && data.user.role === 'employee') {
+    var ok = await verifyLiveProfile();
+    if (!ok) {
+      if (errEl) {
+        errEl.textContent = 'Account inactive or security verification failed';
+        errEl.style.display = 'block';
+      }
+      return false;
+    }
+    toast('Welcome back, ' + (CURRENT_PROFILE && CURRENT_PROFILE.full_name ? CURRENT_PROFILE.full_name : (data.user && data.user.full_name ? data.user.full_name : 'User')));
+    if (CURRENT_ROLE === 'employee') {
       try { await loadMyRouteFromSupabase(); } catch(e) {}
     }
     if (data.must_change_password) {
       showForcedPasswordChangeModal();
     } else {
-      location.hash = '#dashboard';
+      location.hash = (CURRENT_ROLE === 'employee' ? '#my-route' : '#dashboard');
       render();
     }
     return true;
@@ -5686,4 +6183,14 @@ window.getSession = getSession;
 window.setSession = setSession;
 window.save = save;
 window.S=S;
+window.toast = toast;
+window.render = render;
+window.PERMS = PERMS;
+window.canPage = canPage;
+window.canAct = canAct;
+window.verifyLiveProfile = verifyLiveProfile;
+window.ownerDashboard = ownerDashboard;
+window.managerDashboard = managerDashboard;
+window.employeeDashboard = employeeDashboard;
+window.adminDashboard = adminDashboard;
 })();

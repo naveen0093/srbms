@@ -263,8 +263,36 @@ async function verifyAuth(req, env) {
   );
   if (!pr.ok) return null;
   const rows = await pr.json().catch(() => []);
-  const profile = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  let profile = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+
+  // Fallback: look up by clean phone number
+  if (!profile && u.phone) {
+    const cleanPhone = cleanDigits(u.phone);
+    const pRes = await sbRest(
+      env,
+      'profiles?phone=eq.' + encodeURIComponent(cleanPhone) + '&select=id,full_name,role,phone,employee_id,active'
+    );
+    if (pRes.ok) {
+      const pRows = await pRes.json().catch(() => []);
+      if (pRows.length > 0) profile = pRows[0];
+    }
+  }
+
   if (!profile || !profile.active) return null;
+
+  // If employee record linked, fetch live duties
+  if (profile.employee_id) {
+    const empRes = await sbRest(env, 'employees?id=eq.' + encodeURIComponent(profile.employee_id) + '&select=duties');
+    if (empRes.ok) {
+      const empRows = await empRes.json().catch(() => []);
+      if (empRows.length > 0 && Array.isArray(empRows[0].duties)) {
+        profile.duties = empRows[0].duties;
+      }
+    }
+  }
+  if (!Array.isArray(profile.duties)) {
+    profile.duties = [];
+  }
 
   return { user: u, profile, token };
 }
@@ -408,6 +436,33 @@ export default {
           url: sbBase(env),
           anonKey: env.SUPABASE_ANON_KEY || '',
           turnstileSiteKey: env.TURNSTILE_SITE_KEY || ''
+        });
+      }
+
+      // -------------------------------------------------------------
+      // 1b. VERIFY SESSION & LIVE DB PROFILE
+      // -------------------------------------------------------------
+      if (p === '/api/auth/me' && m === 'GET') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !caller.profile || !caller.profile.active) {
+          return J({ ok: false, error: 'unauthorized', message: 'Session expired or account inactive' }, 401);
+        }
+        return J({
+          ok: true,
+          user: {
+            id: caller.user.id,
+            email: caller.user.email,
+            phone: caller.user.phone
+          },
+          profile: {
+            id: caller.profile.id,
+            full_name: caller.profile.full_name,
+            role: caller.profile.role,
+            phone: caller.profile.phone,
+            employee_id: caller.profile.employee_id,
+            duties: Array.isArray(caller.profile.duties) ? caller.profile.duties : [],
+            active: caller.profile.active
+          }
         });
       }
 
