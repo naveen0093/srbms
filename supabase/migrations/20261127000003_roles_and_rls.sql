@@ -561,7 +561,7 @@ REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, anon;
 
 -- Explicitly grant client-callable helper functions to authenticated & service_role
 GRANT EXECUTE ON FUNCTION public.app_role() TO authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.has_role(text[]) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.has_role TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.current_employee_id() TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.role_rank(text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.my_role() TO authenticated, service_role;
@@ -570,8 +570,6 @@ GRANT EXECUTE ON FUNCTION public.is_customer_on_my_open_trip(text) TO authentica
 GRANT EXECUTE ON FUNCTION public.next_bill_no(date) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.next_payment_id(date) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.next_customer_id() TO authenticated, service_role;
-
-COMMIT;
 
 -- ====================================================================
 -- SECTION 7: Verification Queries
@@ -593,6 +591,8 @@ SELECT routine_schema, routine_name, grantee, privilege_type
 FROM information_schema.routine_privileges
 WHERE routine_schema = 'public'
   AND grantee IN ('anon', 'public');
+
+COMMIT;
 
 -- 4. Test Matrix of Role × Table Permissions
 /*

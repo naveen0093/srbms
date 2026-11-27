@@ -15,8 +15,6 @@ node_modules/
 # Supabase Local Cache & Branches
 supabase/.temp/
 supabase/.branches/
-seed.test.sql
-supabase/seed.test.sql
 
 # Logs & System Files
 *.log

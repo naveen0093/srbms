@@ -211,10 +211,10 @@ assert.ok(appCode.includes("rate_source: 'manual'"), "Bill items must record rat
 assert.ok(appCode.includes("entered_by:"), "Bill items must record entered_by");
 
 // Verify price_list table exists in SQL migration
-const sqlInit = fs.readFileSync('supabase/migrations/001_init.sql', 'utf8');
-assert.ok(sqlInit.includes('create table if not exists price_list'), 'price_list table must exist in 001_init.sql');
-assert.ok(sqlInit.includes('rate numeric not null check (rate >= 0)'), 'price_list table has rate numeric');
-assert.ok(sqlInit.includes('effective_from date not null default current_date'), 'price_list table has effective_from date');
+const sqlCore = fs.readFileSync('supabase/migrations/20261127000001_core_schema.sql', 'utf8');
+assert.ok(/create table if not exists public\.price_list/i.test(sqlCore), 'price_list table must exist in 20261127000001_core_schema.sql');
+assert.ok(sqlCore.includes('rate numeric not null check (rate >= 0)'), 'price_list table has rate numeric');
+assert.ok(sqlCore.includes('effective_from date not null default current_date'), 'price_list table has effective_from date');
 
 // Test Price Variance Report
 const { priceVarianceReport } = context.window;
@@ -256,11 +256,11 @@ console.log(`    ✓ Decision 3 verified (provisional receipt ${provId} stored i
 // --- Decision 4: Cafe Module Frozen & Isolated ---
 console.log('  Checking Decision 4: Cafe module isolated in separate localStorage key and hidden from employees...');
 assert.equal(context.window.KEY_CAFE, 'larven-cafe-v1', "Cafe data must save to 'larven-cafe-v1'");
-assert.ok(!sqlInit.includes('create table if not exists cafe_sales'), '001_init.sql must NOT contain cafe_sales table');
-assert.ok(!sqlInit.includes('create table if not exists cafe_purchases'), '001_init.sql must NOT contain cafe_purchases table');
-assert.ok(!sqlInit.includes('create table if not exists cafe_expenses'), '001_init.sql must NOT contain cafe_expenses table');
-assert.ok(!sqlInit.includes('create table if not exists cafe_stock_moves'), '001_init.sql must NOT contain cafe_stock_moves table');
-assert.ok(!sqlInit.includes('create table if not exists cafe_employees'), '001_init.sql must NOT contain cafe_employees table');
+assert.ok(!sqlCore.includes('cafe_sales'), '20261127000001_core_schema.sql must NOT contain cafe_sales table');
+assert.ok(!sqlCore.includes('cafe_purchases'), '20261127000001_core_schema.sql must NOT contain cafe_purchases table');
+assert.ok(!sqlCore.includes('cafe_expenses'), '20261127000001_core_schema.sql must NOT contain cafe_expenses table');
+assert.ok(!sqlCore.includes('cafe_stock_moves'), '20261127000001_core_schema.sql must NOT contain cafe_stock_moves table');
+assert.ok(!sqlCore.includes('cafe_employees'), '20261127000001_core_schema.sql must NOT contain cafe_employees table');
 
 // Verify Cafe is hidden from employee
 context.window.CURRENT_ROLE = 'employee';
@@ -407,10 +407,10 @@ assert.ok(indexHtml.includes('<script src="/vendor/xlsx.full.min.js"></script>')
 assert.ok(indexHtml.includes('<script src="/vendor/qrcode.min.js"></script>'), 'index.html loads vendored qrcode');
 console.log('  ✓ public/index.html is clean, standalone, and references local assets');
 
-// 8. Verifying 003_roles_and_rls.sql migration
-console.log('8. Verifying 003_roles_and_rls.sql migration (Roles, RLS, Helpers & Verification Queries)...');
-const coreSql = fs.readFileSync('supabase/migrations/001_core_schema.sql', 'utf8');
-const rlsSql = fs.readFileSync('supabase/migrations/003_roles_and_rls.sql', 'utf8');
+// 8. Verifying 20261127000003_roles_and_rls.sql migration
+console.log('8. Verifying 20261127000003_roles_and_rls.sql migration (Roles, RLS, Helpers & Verification Queries)...');
+const coreSql = fs.readFileSync('supabase/migrations/20261127000001_core_schema.sql', 'utf8');
+const rlsSql = fs.readFileSync('supabase/migrations/20261127000003_roles_and_rls.sql', 'utf8');
 
 // Roles and schema checks in core schema
 assert.ok(coreSql.includes("role IN ('admin', 'owner', 'manager', 'employee')"), "Migration enforces role IN ('admin', 'owner', 'manager', 'employee')");
@@ -442,12 +442,12 @@ assert.ok(rlsSql.includes("rowsecurity = false"), "Migration contains verificati
 assert.ok(rlsSql.includes("trim(qual) = 'true'"), "Migration contains verification query for 'true' policies");
 assert.ok(rlsSql.includes("grantee IN ('anon', 'public')"), "Migration contains verification query for anon-executable functions");
 assert.ok(rlsSql.includes("ROLE × TABLE PERMISSIONS MATRIX"), "Migration contains role × table permissions matrix");
-console.log('  ✓ supabase/migrations/003_roles_and_rls.sql verified (100% compliant with Decisions block)');
+console.log('  ✓ supabase/migrations/20261127000003_roles_and_rls.sql verified (100% compliant with Decisions block)');
 
-// 9. Verifying 001_core_schema.sql, 002_views_and_audit.sql, and 004_security_definer_rpcs.sql
-console.log('9. Verifying complete typed schema migrations (001_core, 002_views, 004_rpcs)...');
-const viewsSql = fs.readFileSync('supabase/migrations/002_views_and_audit.sql', 'utf8');
-const rpcsSql = fs.readFileSync('supabase/migrations/004_security_definer_rpcs.sql', 'utf8');
+// 9. Verifying 20261127000001_core_schema.sql, 20261127000002_views_and_audit.sql, and 20261127000004_rpcs.sql
+console.log('9. Verifying complete typed schema migrations (core, views, rpcs)...');
+const viewsSql = fs.readFileSync('supabase/migrations/20261127000002_views_and_audit.sql', 'utf8');
+const rpcsSql = fs.readFileSync('supabase/migrations/20261127000004_rpcs.sql', 'utf8');
 
 // Core schema checks
 assert.ok(coreSql.includes('CREATE TABLE IF NOT EXISTS public.customers'), 'customers table exists');
@@ -478,12 +478,12 @@ const requiredRpcs = [
   'skip_stop', 'set_customer_location', 'close_trip', 'handover_cash', 'production_plan'
 ];
 requiredRpcs.forEach(rpcName => {
-  assert.ok(rpcsSql.includes(`FUNCTION public.${rpcName}`), `RPC ${rpcName} must be defined in 004_security_definer_rpcs.sql`);
+  assert.ok(rpcsSql.includes(`FUNCTION public.${rpcName}`), `RPC ${rpcName} must be defined in 20261127000004_rpcs.sql`);
   assert.ok(rpcsSql.includes(`REVOKE EXECUTE ON FUNCTION public.${rpcName}`), `RPC ${rpcName} must revoke execute from PUBLIC, anon`);
   assert.ok(rpcsSql.includes(`GRANT EXECUTE ON FUNCTION public.${rpcName}`), `RPC ${rpcName} must grant execute`);
 });
 
-// Security Definer & search_path checks on 004 RPCs
+// Security Definer & search_path checks on 20261127000004_rpcs.sql
 assert.strictEqual((rpcsSql.match(/SECURITY DEFINER/g) || []).length, 13, 'All 13 RPCs must be SECURITY DEFINER');
 assert.strictEqual((rpcsSql.match(/SET search_path = public, pg_temp/g) || []).length, 13, 'All 13 RPCs must lock search_path = public, pg_temp');
 
@@ -492,7 +492,7 @@ assert.ok(rpcsSql.includes('p_provisional_id text DEFAULT NULL'), 'deliver_stop 
 assert.ok(rpcsSql.includes('p_offline boolean DEFAULT false'), 'deliver_stop supports offline mode');
 assert.ok(rpcsSql.includes("rate_source, entered_by"), 'deliver_stop stores manual rate source and entered_by');
 assert.ok(rpcsSql.includes('credit_limit_warning'), 'deliver_stop returns credit_limit_warning');
-console.log('  ✓ 001_core_schema.sql, 002_views_and_audit.sql, and 004_security_definer_rpcs.sql verified (100% compliant)');
+console.log('  ✓ 20261127000001_core_schema.sql, 20261127000002_views_and_audit.sql, and 20261127000004_rpcs.sql verified (100% compliant)');
 
 // 10. Verifying Phone + Password Auth & User Management in _worker.js, app.js, and DB migrations
 console.log('10. Verifying Phone + Password Login & User Management Architecture...');
@@ -530,8 +530,8 @@ assert.ok(workerCode.includes('canManageUser'), 'worker defines canManageUser ra
 assert.ok(workerCode.includes('cannot_remove_last_active_owner'), 'worker guards last active owner from deactivation');
 
 // Database-level enforcement migration
-assert.ok(fs.existsSync('supabase/migrations/005_user_management.sql'), '005_user_management.sql migration must exist');
-const userMgmtSql = fs.readFileSync('supabase/migrations/005_user_management.sql', 'utf8');
+assert.ok(fs.existsSync('supabase/migrations/20261127000005_user_management.sql'), '20261127000005_user_management.sql migration must exist');
+const userMgmtSql = fs.readFileSync('supabase/migrations/20261127000005_user_management.sql', 'utf8');
 assert.ok(userMgmtSql.includes('check_profile_rank_and_last_owner'), 'DB trigger checks profile rank and last active owner');
 assert.ok(userMgmtSql.includes('Cannot remove or deactivate the last active owner'), 'DB trigger guards last active owner');
 assert.ok(userMgmtSql.includes('can_manage_target_user'), 'DB defines can_manage_target_user function');
@@ -885,5 +885,61 @@ await context.window.OutboxDB.removeAttention(attItem.id);
 const attentionAfterDismiss = await context.window.OutboxDB.getAttention();
 assert.strictEqual(attentionAfterDismiss.length, 0, 'Attention list empty after dismiss');
 console.log('    ✓ Trip cancelled while offline verified (409 Conflict moved to Needs Attention with reason, UI card rendered with Retry/Dismiss)');
+
+// 13. Verifying Timestamped Migrations, Storage Migration, seed.test.sql, and Apply Scripts
+console.log('13. Verifying Timestamped Migrations, Storage Migration, seed.test.sql, and Apply Scripts...');
+
+// A. Deleted obsolete files
+assert.ok(!fs.existsSync('supabase/migrations/001_init.sql'), 'Obsolete 001_init.sql must be deleted');
+assert.ok(!fs.existsSync('supabase/migrations/002_storage.sql'), 'Obsolete 002_storage.sql must be deleted');
+
+// B. Timestamped migrations exist in order and have transaction boundaries
+const expectedMigrations = [
+  'supabase/migrations/20261127000001_core_schema.sql',
+  'supabase/migrations/20261127000002_views_and_audit.sql',
+  'supabase/migrations/20261127000003_roles_and_rls.sql',
+  'supabase/migrations/20261127000004_rpcs.sql',
+  'supabase/migrations/20261127000005_user_management.sql',
+  'supabase/migrations/20261127000006_storage.sql'
+];
+expectedMigrations.forEach(file => {
+  assert.ok(fs.existsSync(file), `Migration file ${file} must exist`);
+  const content = fs.readFileSync(file, 'utf8');
+  assert.ok(/^\s*(--[^\n]*\r?\n\s*)*BEGIN;/m.test(content), `${file} must start with BEGIN; for single transaction`);
+  assert.ok(/(?:COMMIT;)\s*$/m.test(content.trim()), `${file} must end with COMMIT; for single transaction`);
+});
+
+// C. Storage migration rules
+const storageSql = fs.readFileSync('supabase/migrations/20261127000006_storage.sql', 'utf8');
+assert.ok(storageSql.includes("'employee-docs'"), 'storage migration creates employee-docs bucket');
+assert.ok(storageSql.includes("'vehicle-evidence'"), 'storage migration creates vehicle-evidence bucket');
+assert.ok(storageSql.includes('public = false'), 'storage migration ensures buckets are private');
+assert.ok(storageSql.includes("public.has_role('owner')"), 'employee-docs is owner only');
+assert.ok(storageSql.includes("public.has_role('owner', 'manager')"), 'vehicle-evidence full access for owner and manager');
+assert.ok(storageSql.includes("split_part(name, '/', 1)"), 'vehicle-evidence employee access partitioned by trip folder');
+assert.ok(storageSql.includes('public.current_employee_id()'), 'vehicle-evidence employee access verifies current employee');
+assert.ok(!storageSql.includes('is_staff()'), 'storage migration MUST NOT use is_staff()');
+assert.ok(!storageSql.includes('my_role()'), 'storage migration MUST NOT use my_role()');
+
+// D. seed.test.sql checks
+assert.ok(fs.existsSync('supabase/seed.test.sql'), 'supabase/seed.test.sql must exist');
+const testSeedSql = fs.readFileSync('supabase/seed.test.sql', 'utf8');
+['admin', 'owner', 'manager', 'employee'].forEach(role => {
+  assert.ok(testSeedSql.includes(`'${role}'`), `seed.test.sql must seed role ${role}`);
+});
+assert.ok(testSeedSql.includes('public.profiles (id,'), 'seed.test.sql must insert into profiles.id');
+assert.ok(testSeedSql.includes('auth.users ('), 'seed.test.sql must create mock auth.users to satisfy foreign key');
+assert.ok(testSeedSql.includes('duties'), 'seed.test.sql must seed employee duties');
+
+// E. Apply scripts & bootstrap checks
+assert.ok(fs.existsSync('scripts/apply_migrations.mjs'), 'scripts/apply_migrations.mjs must exist');
+assert.ok(fs.existsSync('scripts/apply_migrations.sh'), 'scripts/apply_migrations.sh must exist');
+assert.ok(fs.existsSync('supabase/apply_all.sql'), 'supabase/apply_all.sql must exist');
+
+const applyAllSql = fs.readFileSync('supabase/apply_all.sql', 'utf8');
+assert.ok(applyAllSql.includes('FIRST-OWNER / ADMIN BOOTSTRAP'), 'apply_all.sql must include bootstrap instructions');
+assert.ok(applyAllSql.includes('20261127000006_storage.sql'), 'apply_all.sql must include storage migration');
+
+console.log('  ✓ Timestamped migrations, Storage RLS, seed.test.sql, and Apply scripts verified (100% compliant)');
 
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');
