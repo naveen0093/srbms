@@ -1915,6 +1915,10 @@ function render(){
  if((location.hash||'').indexOf('#bill=')==0){return renderPublic()}
  if((location.hash||'').indexOf('#doc=')==0){return renderDoc()}
  if((location.hash||'').indexOf('#me=')==0){return renderPortal()}
+ if(!getSession()){
+   location.hash = '#login';
+   return renderLogin();
+ }
  document.body.classList.remove('public');var id=(location.hash||'#dashboard').slice(1);
  if(id.indexOf('cafe-') == 0 && CURRENT_ROLE == 'employee'){
    toast('Access restricted: Cafe is not accessible to employee accounts.');
@@ -2370,17 +2374,22 @@ function setSession(sess) {
         OutboxDB.clearSession();
       }
       setCurrentRole('owner');
+      updateUserBadge(null);
     }
   } catch(e) {}
 }
 
 function updateUserBadge(u) {
   var userBox = document.querySelector('.user');
-  if (userBox && u) {
-    var initial = (u.full_name || 'U')[0].toUpperCase();
-    userBox.innerHTML = '<span class="avatar">' + esc(initial) + '</span>' +
-      '<div><b>' + esc(u.full_name || 'Staff') + '</b><small>' + esc(u.role ? u.role.toUpperCase() : 'STAFF') + '</small></div>' +
-      '<button type="button" class="btn sm alt" id="btn-logout" title="Sign out" style="margin-left:8px;padding:3px 8px;font-size:11px;">Logout</button>';
+  if (userBox) {
+    if (u) {
+      var initial = (u.full_name || 'U')[0].toUpperCase();
+      userBox.innerHTML = '<span class="avatar">' + esc(initial) + '</span>' +
+        '<div><b>' + esc(u.full_name || 'Staff') + '</b><small>' + esc(u.role ? u.role.toUpperCase() : 'STAFF') + '</small></div>' +
+        '<button type="button" class="btn sm alt" id="btn-logout" title="Sign out" style="margin-left:8px;padding:3px 8px;font-size:11px;">Logout</button>';
+    } else {
+      userBox.innerHTML = '<a href="#login" class="btn sm alt" id="btn-header-login" style="text-decoration:none;font-size:12px;font-weight:700;">Sign In 🔐</a>';
+    }
   }
 }
 
@@ -3292,6 +3301,10 @@ var OutboxDB = {
             self.state.session = getSess.result ? getSess.result.value : null;
             if (self.state.session && !CURRENT_SESSION) {
               setSession(self.state.session);
+              if (location.hash === '#login' || !location.hash) {
+                location.hash = (self.state.session.user && self.state.session.user.role === 'employee') ? '#my-route' : '#dashboard';
+              }
+              if (typeof render === 'function') render();
             }
           };
         }
