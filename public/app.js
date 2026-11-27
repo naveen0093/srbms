@@ -33,6 +33,12 @@ var ic=function(n,extra){return '<svg viewBox="0 0 24 24" fill="none" stroke="cu
 
 /* ---------- data ---------- */
 var KEY='aquaflow-bms-v1';
+function getStorageKey(userId) {
+  var uid = userId || (typeof CURRENT_PROFILE !== 'undefined' && CURRENT_PROFILE && (CURRENT_PROFILE.id || CURRENT_PROFILE.user_id)) ||
+            (typeof CURRENT_SESSION !== 'undefined' && CURRENT_SESSION && CURRENT_SESSION.user && CURRENT_SESSION.user.id) ||
+            (typeof CURRENT_SESSION !== 'undefined' && CURRENT_SESSION && CURRENT_SESSION.session && CURRENT_SESSION.session.user && CURRENT_SESSION.session.user.id);
+  return uid ? 'aquaflow-bms-v1_' + uid : 'aquaflow-bms-v1';
+}
 /* ---------- Cafe Module Storage Isolation (FROZEN) ---------- */
 var KEY_CAFE = 'larven-cafe-v1';
 var CAFE_DATA = null;
@@ -327,8 +333,51 @@ function queueOfflineDelivery(tripId, data) {
 function bmsDef(){
  return {
   customers:[],bills:[],payments:[],stock:[],expenses:[],employees:[],attendance:[],advances:[],
+  fg:[],visits:[],contacts:[],vehicles:[],vehicleTrips:[],trips:[],tripStops:[],orders:[],deliveries:[],cashHandovers:[],
+  cancelledBills:[],deletedBills:[],invites:[],applications:[],
   settings:{name:'Larven Enterprises',owner:'Muni prasad',phone:'',gst:'37BDGPS8418C2ZC',gv:1,address:'',products:defProducts(),pv:3,low:100}
  };
+}
+function loadUserState(role, profile) {
+  var r = role || CURRENT_ROLE;
+  var p = profile || CURRENT_PROFILE;
+  if (r === 'employee') {
+    // 1) For role employee never load the legacy state at all (start from an empty state plus what My Route loads from the database)
+    S = bmsDef();
+    S.trips = [];
+    S.tripStops = [];
+    S.orders = [];
+    S.deliveries = [];
+    S.cashHandovers = [];
+    initCafeStorage();
+    try { window.S = S; } catch(e) {}
+    return S;
+  }
+  var k = getStorageKey((p && (p.id || p.user_id)) || null);
+  var raw = null;
+  try {
+    raw = localStorage.getItem(k);
+    if (!raw && r === 'owner' && k !== 'aquaflow-bms-v1') {
+      raw = localStorage.getItem('aquaflow-bms-v1');
+      if (raw) {
+        try { localStorage.setItem(k, raw); } catch(e) {}
+      }
+    }
+    if (raw) S = JSON.parse(raw);
+  } catch(e) {
+    raw = null;
+  }
+  if (!S || !S.bills) S = bmsDef();
+  else {
+    var def = bmsDef();
+    Object.keys(def).forEach(function(key) {
+      if (S[key] === undefined) S[key] = def[key];
+    });
+  }
+  initCafeStorage();
+  heal();
+  try { window.S = S; } catch(e) {}
+  return S;
 }
 var S;
 try{S=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){S=null}
@@ -399,14 +448,15 @@ if(S.settings&&S.settings.pv!==3){(S.settings.products||[]).forEach(function(p){
 if(S.settings&&S.settings.gv!==1){if(!S.settings.gst)S.settings.gst='37BDGPS8418C2ZC';S.settings.gv=1}
 /* bill.paid is always calculated from the payment records, so Bills, Customers, Payments and Outstanding can never disagree */
 function syncPaid(){var m={};S.payments.forEach(function(p){if(p.bill&&p.bill!='-')m[p.bill]=(m[p.bill]||0)+p.amount});S.bills.forEach(function(b){b.paid=Math.round((m[b.id]||0)*100)/100})}
-function heal(){var bid={},cid={},m={};S.bills.forEach(function(b){bid[b.id]=1});(S.cancelledBills||[]).forEach(function(b){bid[b.id]=1});(S.deletedBills||[]).forEach(function(b){bid[b.id]=1});S.customers.forEach(function(c){cid[c.id]=1});
- S.payments.forEach(function(p){if(p.bill&&p.bill!='-')m[p.bill]=(m[p.bill]||0)+p.amount});
- S.bills.forEach(function(b){var d=Math.round(((b.paid||0)-(m[b.id]||0))*100)/100;if(d>0)S.payments.push({id:nid('P',S.payments),date:b.date,cust:b.cust,amount:d,mode:b.mode||'Cash',bill:b.id})});
- S.payments=S.payments.filter(function(p){return p.bill=='-'?!!cid[p.cust]:!!bid[p.bill]});syncPaid()}
+function heal(){var bid={},cid={},m={};(S.bills||[]).forEach(function(b){bid[b.id]=1});(S.cancelledBills||[]).forEach(function(b){bid[b.id]=1});(S.deletedBills||[]).forEach(function(b){bid[b.id]=1});(S.customers||[]).forEach(function(c){cid[c.id]=1});
+ (S.payments||[]).forEach(function(p){if(p.bill&&p.bill!='-')m[p.bill]=(m[p.bill]||0)+p.amount});
+ (S.bills||[]).forEach(function(b){var d=Math.round(((b.paid||0)-(m[b.id]||0))*100)/100;if(d>0)(S.payments=S.payments||[]).push({id:nid('P',S.payments),date:b.date,cust:b.cust,amount:d,mode:b.mode||'Cash',bill:b.id})});
+ S.payments=(S.payments||[]).filter(function(p){return p.bill=='-'?!!cid[p.cust]:!!bid[p.bill]});syncPaid()}
 function save(){
   try{
     syncPaid();
     saveCafe();
+    if (CURRENT_ROLE === 'employee') return;
     var bmsData = Object.assign({}, S);
     delete bmsData.cafeSales;
     delete bmsData.cafePurchases;
@@ -415,7 +465,8 @@ function save(){
     delete bmsData.cafeEmployees;
     delete bmsData.trips;
     delete bmsData.tripStops;
-    localStorage.setItem(KEY, JSON.stringify(bmsData));
+    var k = getStorageKey();
+    localStorage.setItem(k, JSON.stringify(bmsData));
   }catch(e){toast('Could not save: browser storage is full')}}
 function nid(p,a){return p+(a.length?Math.max.apply(null,a.map(function(x){return parseInt(String(x.id).replace(/\D/g,''))||0}))+1:1)}
 function custName(id){var c=S.customers.filter(function(x){return x.id==id})[0];return c?c.name:'Walk-in'}
@@ -433,6 +484,13 @@ function sum(a,f){return a.reduce(function(x,y){return x+f(y)},0)}
 heal();save();
 window.__AF={S:function(){return S},save:save};
 window.S=S;
+try {
+  Object.defineProperty(window, 'S', {
+    get: function() { return S; },
+    set: function(v) { S = v; },
+    configurable: true
+  });
+} catch(e) {}
 /* ---------- navigation ---------- */
 var NAV=[
  ['',[['dashboard','Dashboard','home']]],
@@ -550,13 +608,13 @@ function ownerDashboard(){
 function managerDashboard(){
  var t=today(),y=dayOff(1);
  var mon=t.slice(0,7);
- var ddToday=S.fg.filter(function(r){return r.date==t&&(r.kind=='Dispatch'||r.kind=='EmpLoad')});
+ var ddToday=(S.fg||[]).filter(function(r){return r.date==t&&(r.kind=='Dispatch'||r.kind=='EmpLoad')});
  var totalDispCasesToday=sum(ddToday,function(r){return +r.qty||0});
- var activeTrips=S.vehicleTrips.filter(function(tr){return tr.status==='active'||(!tr.handoverAt&&!tr.endedAt)}).length;
+ var activeTrips=(S.vehicleTrips||[]).filter(function(tr){return tr.status==='active'||(!tr.handoverAt&&!tr.endedAt)}).length;
  var bal=fgBal(),sizes=fgSizes(),fgTotal=sum(sizes,function(z){return fgGet(bal,'G1',z)+fgGet(bal,'G2',z)+fgGet(bal,'P',z)});
- var pendDiesel=S.expenses.filter(function(e){return e.cat=='Diesel'&&dstat(e)=='Pending'}).length;
+ var pendDiesel=(S.expenses||[]).filter(function(e){return e.cat=='Diesel'&&dstat(e)=='Pending'}).length;
  var empsOnDuty=S.attendance?S.attendance.filter(function(a){return a.date==t&&a.status=='Present'}).length:0;
- var totalCust=S.customers.length,todayCust=S.customers.filter(function(c){return c.date==t}).length;
+ var totalCust=(S.customers||[]).length,todayCust=(S.customers||[]).filter(function(c){return c.date==t}).length;
  
  var days=[],lab=[];for(var i=6;i>=0;i--){var d=dayOff(i);days.push(d);lab.push(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(d+'T00:00').getDay()])}
  var dispVol=days.map(function(d){return sum(S.fg.filter(function(r){return r.date==d&&(r.kind=='Dispatch'||r.kind=='EmpLoad')}),function(r){return +r.qty||0})});
@@ -2321,6 +2379,11 @@ async function verifyLiveProfile() {
     }
     setCurrentRole(data.profile.role);
     setCurrentProfile(data.profile);
+    loadUserState(data.profile.role, data.profile);
+    if (data.profile.role === 'employee') {
+      try { await loadMyRouteFromSupabase(); } catch(e) {}
+    }
+    try { await loadDatabaseSlices(); } catch(e) {}
     var sess = getSession();
     if (sess && sess.user) {
       sess.user.role = data.profile.role;
@@ -2857,9 +2920,25 @@ function setSession(sess) {
     if (sess && sess.user) {
       updateUserBadge(sess.user);
     } else if (!sess) {
-      if (typeof OutboxDB !== 'undefined' && OutboxDB.clearSession) {
-        OutboxDB.clearSession();
+      if (typeof OutboxDB !== 'undefined') {
+        if (OutboxDB.clearSession) OutboxDB.clearSession();
+        if (OutboxDB.clearCachedTrips) OutboxDB.clearCachedTrips();
+        if (OutboxDB.state) OutboxDB.state.cachedTrips = {};
       }
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('larven_idb_trip_cache');
+        }
+      } catch(e) {}
+      // 2) On logout clear in-memory S and the cached trip data
+      S = bmsDef();
+      S.trips = [];
+      S.tripStops = [];
+      S.orders = [];
+      S.deliveries = [];
+      S.cashHandovers = [];
+      initCafeStorage();
+      try { window.S = S; } catch(e) {}
       setCurrentRole(null);
       setCurrentProfile(null);
       updateUserBadge(null);
@@ -3937,6 +4016,25 @@ var OutboxDB = {
     return this.state.cachedTrips[tripId] || null;
   },
 
+  clearCachedTrips: async function() {
+    this.state.cachedTrips = {};
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem('larven_idb_trip_cache');
+    } catch(e) {}
+    if (!this.db) return;
+    var self = this;
+    return new Promise(function(resolve) {
+      try {
+        var tx = self.db.transaction(['trip_cache'], 'readwrite');
+        var req = tx.objectStore('trip_cache').clear();
+        req.onsuccess = function() { resolve(); };
+        req.onerror = function() { resolve(); };
+      } catch(e) {
+        resolve();
+      }
+    });
+  },
+
   addAttention: async function(item) {
     await this.init();
     if (!this.db) {
@@ -4523,6 +4621,228 @@ async function loadMyRouteFromSupabase() {
   } catch (err) {
     console.warn('Could not load employee route from Supabase:', err);
     return null;
+  }
+}
+
+/* ---------- Supabase Data-Layer Slices (G4 Order: customers, bills, payments, stock, expenses, employees) ---------- */
+async function loadCustomersFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return S.customers;
+
+  var raw = await sbGet('customers', 'select=*&order=name.asc');
+  if (!Array.isArray(raw)) {
+    if (CURRENT_ROLE === 'employee') S.customers = [];
+    return S.customers;
+  }
+
+  var mapped = raw.map(function(c) {
+    return {
+      id: c.id,
+      name: c.name,
+      phone: c.phone || '',
+      area: c.area || '',
+      address: c.address || '',
+      addr: c.address || '',
+      lat: c.lat != null ? Number(c.lat) : null,
+      lng: c.lng != null ? Number(c.lng) : null,
+      accuracy_m: c.accuracy_m != null ? Number(c.accuracy_m) : null,
+      credit_limit: c.credit_limit != null ? Number(c.credit_limit) : null,
+      balance: c.balance != null ? Number(c.balance) : 0
+    };
+  });
+
+  S.customers = mapped;
+  return S.customers;
+}
+
+async function loadBillsFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return S.bills;
+
+  if (CURRENT_ROLE === 'employee') {
+    S.bills = [];
+    return S.bills;
+  }
+
+  var raw = await sbGet('bills', 'select=*,bill_items(*)&order=bill_date.desc,created_at.desc');
+  if (!Array.isArray(raw)) {
+    return S.bills;
+  }
+
+  S.bills = raw.map(function(b) {
+    var items = (b.bill_items || []).map(function(it) {
+      return {
+        p: it.product_name,
+        q: Number(it.qty_bottles || 0),
+        r: Number(it.rate_per_case || 0),
+        case_size: Number(it.case_size || 1)
+      };
+    });
+    return {
+      id: b.id,
+      date: b.bill_date,
+      cust: b.customer_id,
+      items: items,
+      total: Number(b.total || 0),
+      paid: Number(b.paid || 0),
+      mode: b.payment_mode || 'Cash',
+      gst: Boolean(b.gst),
+      status: b.status || 'active',
+      trip: b.provisional_id || null
+    };
+  });
+  return S.bills;
+}
+
+async function loadPaymentsFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return S.payments;
+
+  if (CURRENT_ROLE === 'employee') {
+    S.payments = [];
+    return S.payments;
+  }
+
+  var raw = await sbGet('payments', 'select=*&order=payment_date.desc,created_at.desc');
+  if (!Array.isArray(raw)) {
+    return S.payments;
+  }
+
+  S.payments = raw.map(function(p) {
+    return {
+      id: p.id,
+      date: p.payment_date,
+      cust: p.customer_id,
+      amount: Number(p.amount || 0),
+      mode: p.mode || 'Cash',
+      bill: p.bill_id || '-',
+      notes: p.notes || ''
+    };
+  });
+  syncPaid();
+  return S.payments;
+}
+
+async function loadStockFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return { fg: S.fg, stock: S.stock };
+
+  var runs = await sbGet('production_runs', 'select=*&order=run_date.desc,created_at.desc');
+  var moves = await sbGet('fg_movements', 'select=*&order=move_date.desc,created_at.desc');
+
+  var fg = [];
+  if (Array.isArray(runs)) {
+    runs.forEach(function(r) {
+      fg.push({
+        id: r.id,
+        date: r.run_date,
+        type: 'prod',
+        size: r.product_name,
+        qty: Number(r.cases_produced || 0),
+        notes: r.notes || ''
+      });
+    });
+  }
+
+  if (Array.isArray(moves)) {
+    moves.forEach(function(m) {
+      fg.push({
+        id: m.id,
+        date: m.move_date,
+        type: m.movement_type === 'transfer' ? 'transfer' : (m.movement_type === 'dispatch' ? 'dispatch' : 'empload'),
+        size: m.product_name,
+        qty: Number(m.cases || 0),
+        from: m.from_location_id,
+        to: m.to_location_id,
+        notes: m.notes || ''
+      });
+    });
+  }
+
+  if (Array.isArray(runs) || Array.isArray(moves)) {
+    S.fg = fg;
+  }
+  return { fg: S.fg, stock: S.stock };
+}
+
+async function loadExpensesFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return S.expenses;
+
+  if (CURRENT_ROLE === 'employee') {
+    S.expenses = [];
+    return S.expenses;
+  }
+
+  var raw = await sbGet('expenses', 'select=*&order=expense_date.desc,created_at.desc');
+  if (!Array.isArray(raw)) {
+    return S.expenses;
+  }
+
+  S.expenses = raw.map(function(x) {
+    return {
+      id: x.id,
+      date: x.expense_date,
+      cat: x.category || 'Other',
+      amount: Number(x.amount || 0),
+      desc: x.note || ''
+    };
+  });
+  return S.expenses;
+}
+
+async function loadEmployeesFromSupabase() {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return S.employees;
+
+  var raw = await sbGet('employees', 'select=*&order=name.asc');
+  if (!Array.isArray(raw)) {
+    if (CURRENT_ROLE === 'employee') S.employees = [];
+    return S.employees;
+  }
+
+  S.employees = raw.map(function(e) {
+    return {
+      id: e.id,
+      name: e.name,
+      role: e.role,
+      phone: e.phone || '',
+      salary: e.salary != null ? Number(e.salary) : null,
+      joined: e.joined_date || '',
+      is_active: e.active !== false,
+      duties: Array.isArray(e.duties) ? e.duties : [],
+      address: e.address || ''
+    };
+  });
+  return S.employees;
+}
+
+async function loadDatabaseSlices() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return false;
+  }
+  var sess = getSession();
+  if (!sess || !sess.session || !sess.session.access_token) return false;
+
+  try {
+    // Slices executed strictly in requested order:
+    // 1. customers, 2. bills, 3. payments, 4. stock, 5. expenses, 6. employees
+    await loadCustomersFromSupabase();
+    await loadBillsFromSupabase();
+    await loadPaymentsFromSupabase();
+    await loadStockFromSupabase();
+    await loadExpensesFromSupabase();
+    await loadEmployeesFromSupabase();
+    return true;
+  } catch(e) {
+    console.warn('Error loading database slices:', e);
+    return false;
   }
 }
 
@@ -6192,5 +6512,14 @@ window.verifyLiveProfile = verifyLiveProfile;
 window.ownerDashboard = ownerDashboard;
 window.managerDashboard = managerDashboard;
 window.employeeDashboard = employeeDashboard;
+window.getStorageKey = getStorageKey;
+window.loadUserState = loadUserState;
+window.loadCustomersFromSupabase = loadCustomersFromSupabase;
+window.loadBillsFromSupabase = loadBillsFromSupabase;
+window.loadPaymentsFromSupabase = loadPaymentsFromSupabase;
+window.loadStockFromSupabase = loadStockFromSupabase;
+window.loadExpensesFromSupabase = loadExpensesFromSupabase;
+window.loadEmployeesFromSupabase = loadEmployeesFromSupabase;
+window.loadDatabaseSlices = loadDatabaseSlices;
 window.adminDashboard = adminDashboard;
 })();

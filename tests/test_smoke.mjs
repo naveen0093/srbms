@@ -1581,4 +1581,205 @@ assert.strictEqual(canPage('dashboard'), false, 'Denied after logout');
 
 console.log('  ✓ Unified Authoritative Permissions Map (PERMS), Role Dashboards & Guards verified (100% compliant)');
 
+// ============================================================================
+// 19. Validating Storage Namespacing, Employee State Isolation, Logout Purge & Data-Layer Slices (G4 Order)
+// ============================================================================
+console.log('19. Validating Storage Namespacing, Employee State Isolation, Logout Purge & Data-Layer Slices...');
+
+const {
+  getStorageKey,
+  loadUserState,
+  loadCustomersFromSupabase,
+  loadBillsFromSupabase,
+  loadPaymentsFromSupabase,
+  loadStockFromSupabase,
+  loadExpensesFromSupabase,
+  loadEmployeesFromSupabase,
+  loadDatabaseSlices,
+  OutboxDB
+} = context.window;
+
+// 1. Namespacing the legacy localStorage state key by user id
+assert.strictEqual(typeof getStorageKey, 'function', 'getStorageKey must be a function');
+assert.strictEqual(getStorageKey(null), 'aquaflow-bms-v1', 'getStorageKey returns default key when no user');
+assert.strictEqual(getStorageKey('user-mgr-42'), 'aquaflow-bms-v1_user-mgr-42', 'getStorageKey namespaces by user id');
+
+context.window.setCurrentProfile({ id: 'u-owner-99', role: 'owner' });
+assert.strictEqual(getStorageKey(), 'aquaflow-bms-v1_u-owner-99', 'getStorageKey automatically uses CURRENT_PROFILE.id');
+
+// Verify manager gets their own namespaced storage and never reads owner legacy key
+context.window.setCurrentRole('manager');
+context.window.setCurrentProfile({ id: 'u-mgr-55', role: 'manager' });
+storageMap['aquaflow-bms-v1'] = JSON.stringify({ bills: [{ id: 'B-OWNER-SECRET', total: 99999 }] });
+storageMap['aquaflow-bms-v1_u-mgr-55'] = JSON.stringify({ bills: [{ id: 'B-MGR-1', total: 100 }] });
+loadUserState('manager', { id: 'u-mgr-55', role: 'manager' });
+assert.strictEqual(context.window.S.bills.length, 1, 'Manager loads only their own namespaced storage');
+assert.strictEqual(context.window.S.bills[0].id, 'B-MGR-1', 'Manager does not see owner legacy bills');
+
+// 2. Role employee isolation: NEVER load legacy state at all (start from empty state)
+context.window.setCurrentRole('employee');
+context.window.setCurrentProfile({ id: 'u-emp-88', role: 'employee', employee_id: 'E-88' });
+storageMap['aquaflow-bms-v1_u-emp-88'] = JSON.stringify({ bills: [{ id: 'B-LEAKED', total: 500 }] });
+loadUserState('employee', { id: 'u-emp-88', role: 'employee' });
+assert.strictEqual(context.window.S.bills.length, 0, 'Employee never loads legacy state (starts with 0 bills)');
+assert.strictEqual(context.window.S.payments.length, 0, 'Employee starts with 0 payments');
+assert.strictEqual(context.window.S.expenses.length, 0, 'Employee starts with 0 expenses');
+
+// Verify save() does not save legacy state for employee role
+context.window.S.bills = [{ id: 'B-TEMP', total: 10 }];
+context.window.save();
+assert.strictEqual(storageMap['aquaflow-bms-v1_u-emp-88'], JSON.stringify({ bills: [{ id: 'B-LEAKED', total: 500 }] }), 'Employee save() does not overwrite storage');
+
+// 3. On logout: Clear in-memory S and cached trip data
+context.window.S.bills = [{ id: 'B-LOGOUT-TEST', total: 500 }];
+context.window.S.trips = [{ id: 'TR-LOGOUT-TEST', driver_id: 'E-88' }];
+OutboxDB.state.cachedTrips = { 'TR-LOGOUT-TEST': { trip_id: 'TR-LOGOUT-TEST' } };
+storageMap['larven_idb_trip_cache'] = JSON.stringify({ 'TR-LOGOUT-TEST': { trip_id: 'TR-LOGOUT-TEST' } });
+
+// Queue an offline delivery in outbox (must survive logout per Decision 3 / Scenario 3)
+OutboxDB.state.pendingItems = [{ id: 'OFFLINE-DEL-1', status: 'pending' }];
+
+setSession(null);
+
+assert.strictEqual(context.window.S.bills.length, 0, 'Logout clears in-memory S bills');
+assert.strictEqual(context.window.S.trips.length, 0, 'Logout clears in-memory S trips');
+assert.strictEqual(Object.keys(OutboxDB.state.cachedTrips).length, 0, 'Logout clears OutboxDB cachedTrips');
+assert.strictEqual(storageMap['larven_idb_trip_cache'], undefined, 'Logout clears localStorage trip cache');
+assert.strictEqual(OutboxDB.state.pendingItems.length, 1, 'Logout preserves pending offline outbox items');
+
+// 4. Data-Layer Slices in strict G4 order: customers, bills, payments, stock, expenses, employees
+const sliceOrder = [];
+const mockSession = {
+  session: { access_token: 'valid-test-token-xyz' },
+  user: { id: 'u-mgr-1', role: 'manager' }
+};
+setSession(mockSession);
+context.window.setCurrentRole('manager');
+context.window.setCurrentProfile({ id: 'u-mgr-1', role: 'manager' });
+
+context.window.fetch = async (url) => {
+  const urlStr = String(url);
+  if (urlStr.includes('/api/rest/customers')) {
+    sliceOrder.push('customers');
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'C10', name: 'Krishna Stores', phone: '9848011223', area: 'Main Rd', lat: 13.5, lng: 78.5, credit_limit: 10000, balance: 1200 }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/bills')) {
+    sliceOrder.push('bills');
+    return {
+      ok: true,
+      json: async () => [
+        {
+          id: 'B-1001',
+          bill_date: '2026-11-27',
+          customer_id: 'C10',
+          total: 800,
+          paid: 400,
+          payment_mode: 'Cash',
+          status: 'active',
+          bill_items: [{ product_name: '20 L Can', qty_bottles: 20, rate_per_case: 40 }]
+        }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/payments')) {
+    sliceOrder.push('payments');
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'PAY-1', payment_date: '2026-11-27', customer_id: 'C10', amount: 400, mode: 'Cash', bill_id: 'B-1001' }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/production_runs')) {
+    sliceOrder.push('stock');
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'PR-1', run_date: '2026-11-27', product_name: '20 L Can', cases_produced: 50, notes: 'Morning batch' }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/fg_movements')) {
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'FG-1', move_date: '2026-11-27', movement_type: 'transfer', product_name: '20 L Can', cases: 30, from_location_id: 'PLANT', to_location_id: 'G1' }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/expenses')) {
+    sliceOrder.push('expenses');
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'EXP-1', expense_date: '2026-11-27', category: 'Diesel', amount: 1500, note: 'Vehicle AP39 AB 1234 diesel' }
+      ]
+    };
+  }
+  if (urlStr.includes('/api/rest/employees')) {
+    sliceOrder.push('employees');
+    return {
+      ok: true,
+      json: async () => [
+        { id: 'EMP-1', name: 'Ramesh Driver', role: 'employee', phone: '9848033333', salary: 16000, active: true, duties: ['delivery'] }
+      ]
+    };
+  }
+  return { ok: false, json: async () => ({}) };
+};
+
+const sliceResult = await loadDatabaseSlices();
+assert.strictEqual(sliceResult, true, 'loadDatabaseSlices returns true');
+assert.deepStrictEqual(sliceOrder, ['customers', 'bills', 'payments', 'stock', 'expenses', 'employees'], 'Slices executed strictly in requested G4 order');
+
+// Verify manager populated data
+assert.strictEqual(context.window.S.customers.length, 1, 'S.customers populated from Supabase');
+assert.strictEqual(context.window.S.customers[0].id, 'C10');
+assert.strictEqual(context.window.S.bills.length, 1, 'S.bills populated from Supabase');
+assert.strictEqual(context.window.S.bills[0].id, 'B-1001');
+assert.strictEqual(context.window.S.payments.length, 1, 'S.payments populated from Supabase');
+assert.strictEqual(context.window.S.payments[0].id, 'PAY-1');
+assert.strictEqual(context.window.S.fg.length, 2, 'S.fg populated from production_runs and fg_movements');
+assert.strictEqual(context.window.S.expenses.length, 1, 'S.expenses populated from Supabase');
+assert.strictEqual(context.window.S.expenses[0].id, 'EXP-1');
+assert.strictEqual(context.window.S.employees.length, 1, 'S.employees populated from Supabase');
+
+// 5. Verify RLS Scoping for Employee Role
+context.window.setCurrentRole('employee');
+context.window.setCurrentProfile({ id: 'u-emp-1', employee_id: 'EMP-1', role: 'employee', duties: ['delivery'] });
+context.window.fetch = async (url) => {
+  const urlStr = String(url);
+  // PostgREST RLS for employee returns [] on bills, payments, expenses
+  if (urlStr.includes('/api/rest/bills') || urlStr.includes('/api/rest/payments') || urlStr.includes('/api/rest/expenses')) {
+    return { ok: false, status: 403, json: async () => ({ error: 'PGRST301', message: 'permission denied' }) };
+  }
+  if (urlStr.includes('/api/rest/customers')) {
+    // Only customer on driver open trip
+    return { ok: true, json: async () => [{ id: 'C10', name: 'Krishna Stores', phone: '9848011223' }] };
+  }
+  if (urlStr.includes('/api/rest/production_runs') || urlStr.includes('/api/rest/fg_movements')) {
+    // Delivery driver has no godown/production duty tags
+    return { ok: true, json: async () => [] };
+  }
+  if (urlStr.includes('/api/rest/employees')) {
+    // PostgREST returns only caller own record (id = current_employee_id())
+    return { ok: true, json: async () => [{ id: 'EMP-1', name: 'Ramesh Driver', role: 'employee', phone: '9848033333', active: true }] };
+  }
+  return { ok: false, json: async () => ({}) };
+};
+
+await loadDatabaseSlices();
+assert.strictEqual(context.window.S.bills.length, 0, 'Employee RLS: bills is strictly 0');
+assert.strictEqual(context.window.S.payments.length, 0, 'Employee RLS: payments is strictly 0');
+assert.strictEqual(context.window.S.expenses.length, 0, 'Employee RLS: expenses is strictly 0');
+assert.strictEqual(context.window.S.customers.length, 1, 'Employee RLS: only open trip customer');
+assert.strictEqual(context.window.S.employees.length, 1, 'Employee RLS: only own employee record');
+
+console.log('  ✓ Storage Namespacing, Employee State Isolation, Logout Purge & Data-Layer Slices verified (100% compliant)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');
