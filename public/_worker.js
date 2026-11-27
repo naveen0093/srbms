@@ -443,8 +443,8 @@ export default {
           return J({ error: 'Invalid phone number or password' }, 401);
         }
 
-        // 3. Supabase Auth Password Grant
-        const tokenRes = await fetch(sbBase(env) + '/auth/v1/token?grant_type=password', {
+        // 3. Supabase Auth Password Grant (try phone first, then fallback to phone@larven.in if phone provider disabled)
+        let tokenRes = await fetch(sbBase(env) + '/auth/v1/token?grant_type=password', {
           method: 'POST',
           headers: {
             apikey: env.SUPABASE_ANON_KEY,
@@ -455,6 +455,21 @@ export default {
             password: String(body.password)
           })
         });
+
+        if (!tokenRes.ok) {
+          const cleanPhone = cleanDigits(body.phone);
+          tokenRes = await fetch(sbBase(env) + '/auth/v1/token?grant_type=password', {
+            method: 'POST',
+            headers: {
+              apikey: env.SUPABASE_ANON_KEY,
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              email: cleanPhone + '@larven.in',
+              password: String(body.password)
+            })
+          });
+        }
 
         if (!tokenRes.ok) {
           // Generic error for bad credentials
@@ -472,7 +487,20 @@ export default {
           'profiles?id=eq.' + encodeURIComponent(tokenData.user.id) + '&select=id,full_name,role,phone,employee_id,active'
         );
         const profRows = profRes.ok ? await profRes.json().catch(() => []) : [];
-        const profile = Array.isArray(profRows) && profRows.length > 0 ? profRows[0] : null;
+        let profile = Array.isArray(profRows) && profRows.length > 0 ? profRows[0] : null;
+
+        // Fallback: look up by clean phone number
+        if (!profile && body.phone) {
+          const cleanPhone = cleanDigits(body.phone);
+          const pRes = await sbRest(
+            env,
+            'profiles?phone=eq.' + encodeURIComponent(cleanPhone) + '&select=id,full_name,role,phone,employee_id,active'
+          );
+          if (pRes.ok) {
+            const pRows = await pRes.json().catch(() => []);
+            if (pRows.length > 0) profile = pRows[0];
+          }
+        }
 
         if (!profile || !profile.active) {
           return J({ error: 'Invalid phone number or password' }, 401);

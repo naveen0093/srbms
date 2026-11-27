@@ -2459,6 +2459,17 @@ function renderLogin() {
       '</form>' +
     '</div>' +
   '</div>';
+
+  if (window.turnstile && typeof window.turnstile.render === 'function') {
+    try {
+      var tsEl = document.getElementById('cf-turnstile');
+      if (tsEl && !tsEl.hasChildNodes()) {
+        window.turnstile.render('#cf-turnstile', {
+          sitekey: '1x00000000000000000000AA'
+        });
+      }
+    } catch (e) {}
+  }
 }
 
 function showForcedPasswordChangeModal() {
