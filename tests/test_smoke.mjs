@@ -942,4 +942,90 @@ assert.ok(applyAllSql.includes('20261127000006_storage.sql'), 'apply_all.sql mus
 
 console.log('  ✓ Timestamped migrations, Storage RLS, seed.test.sql, and Apply scripts verified (100% compliant)');
 
+// 14. Verifying Worker Hardening (_worker.js)
+console.log('14. Verifying Worker Hardening (RPC Allowlist, 502 on Error, Table Idempotency, Fail-closed Turnstile, CSP, Security Headers, Content-Length & Size Limits)...');
+
+// 1. Script-src CSP check: NO 'unsafe-inline' in script-src
+const cspMatch = workerCode.match(/script-src[^;"]+/);
+assert.ok(cspMatch, 'CSP script-src directive exists');
+assert.ok(!cspMatch[0].includes("'unsafe-inline'"), "script-src must NOT contain 'unsafe-inline'");
+assert.ok(cspMatch[0].includes("'self'"), "script-src must include 'self'");
+assert.ok(cspMatch[0].includes("https://challenges.cloudflare.com"), "script-src must include https://challenges.cloudflare.com");
+
+// 2. Security Headers: Referrer-Policy and Permissions-Policy
+assert.ok(workerCode.includes("'referrer-policy': 'strict-origin-when-cross-origin'") || workerCode.includes("'Referrer-Policy', 'strict-origin-when-cross-origin'"), 'Worker sets Referrer-Policy');
+assert.ok(workerCode.includes("camera=(self), geolocation=(self)"), 'Worker sets Permissions-Policy to camera and geolocation self only');
+
+// 3. Turnstile: Fail closed when no secret is set, and NO test tokens
+assert.ok(workerCode.includes('if (!secret) return false;'), 'Turnstile must fail closed when no secret is set');
+assert.ok(!workerCode.includes('TEST_TURNSTILE_TOKEN'), 'Turnstile must NOT contain TEST_TURNSTILE_TOKEN test token bypass');
+assert.ok(!workerCode.includes('mock_turnstile_token'), 'Turnstile must NOT contain mock_turnstile_token test token bypass');
+
+// 4. RPC Allowlist: 13 delivery RPCs
+const expected13Rpcs = [
+  'record_production', 'transfer_stock', 'create_order', 'log_order_from_stop',
+  'plan_trip', 'confirm_loading', 'arrive_at_stop', 'deliver_stop',
+  'skip_stop', 'set_customer_location', 'close_trip', 'handover_cash', 'production_plan'
+];
+expected13Rpcs.forEach(rpc => {
+  assert.ok(workerCode.includes(`'${rpc}'`), `ALLOWED_RPCS must include ${rpc}`);
+});
+assert.ok(workerCode.includes('ALLOWED_RPCS.has(fn)'), '/api/rpc must verify fn against ALLOWED_RPCS');
+
+// 5. Removed deterministic local execution fallback & KV idempotency
+assert.ok(!workerCode.includes('Deterministic local execution'), 'Worker must NOT contain deterministic local execution fallback');
+assert.ok(!workerCode.includes("'idem:'"), 'Worker must NOT use KV for idempotency (relies on DB idempotency_keys table)');
+assert.ok(!workerCode.includes("'cancelled_trip:'"), 'Worker must NOT use KV for cancelled_trip (relies on DB trip status)');
+
+// 6. Return 502 on 5xx or fetch exception so outbox retries
+assert.ok(workerCode.includes('sbRes.status >= 500'), 'Worker checks for 5xx status');
+assert.ok(workerCode.includes("502"), 'Worker returns 502 Bad Gateway on 5xx or exception');
+
+// 7. Content-Length checks and size limits
+assert.ok(workerCode.includes('checkContentLength'), 'Worker defines checkContentLength helper');
+assert.ok(workerCode.includes('parseJsonBody'), 'Worker defines parseJsonBody helper');
+assert.ok(workerCode.includes('SIZE_LIMITS'), 'Worker defines SIZE_LIMITS');
+assert.ok(workerCode.includes('413'), 'Worker returns 413 Payload Too Large when limits exceeded');
+
+// 8. Runtime test of worker export
+const workerModule = await import('../public/_worker.js');
+const workerFetch = workerModule.default.fetch;
+assert.ok(typeof workerFetch === 'function', 'Worker exports default fetch handler');
+
+// Test A: Asset fetch sets Referrer-Policy and Permissions-Policy
+const mockAssetEnv = {
+  ASSETS: {
+    fetch: async () => new Response('<!DOCTYPE html><html><body>Test</body></html>', {
+      headers: { 'content-type': 'text/html' }
+    })
+  }
+};
+const htmlRes = await workerFetch(new Request('http://localhost/'), mockAssetEnv);
+assert.strictEqual(htmlRes.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin', 'HTML response has Referrer-Policy');
+assert.strictEqual(htmlRes.headers.get('Permissions-Policy'), 'camera=(self), geolocation=(self)', 'HTML response has Permissions-Policy');
+const htmlCsp = htmlRes.headers.get('Content-Security-Policy');
+const scriptSrcInCsp = htmlCsp ? htmlCsp.match(/script-src[^;]+/) : null;
+assert.ok(scriptSrcInCsp && !scriptSrcInCsp[0].includes("'unsafe-inline'"), "CSP on HTML has no 'unsafe-inline' in script-src");
+
+// Test B: Disallowed RPC returns 404
+const disallowedRpcRes = await workerFetch(new Request('http://localhost/api/rpc/arbitrary_function', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({})
+}), {});
+assert.strictEqual(disallowedRpcRes.status, 404, 'Disallowed RPC returns 404 Not Found');
+
+// Test C: Oversized Content-Length returns 413
+const oversizedRes = await workerFetch(new Request('http://localhost/api/auth/login', {
+  method: 'POST',
+  headers: {
+    'content-type': 'application/json',
+    'content-length': '999999999'
+  },
+  body: JSON.stringify({ phone: '9848012345', password: 'password123' })
+}), {});
+assert.strictEqual(oversizedRes.status, 413, 'Oversized Content-Length returns 413 Payload Too Large');
+
+console.log('  ✓ Worker Hardening verified (RPC allowlist, 502 on 5xx/exception, no KV idempotency, fail-closed Turnstile, CSP, Referrer/Permissions policy, Content-Length & size limits)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

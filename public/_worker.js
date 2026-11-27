@@ -1,15 +1,80 @@
 // Larven Enterprises BMS - Cloudflare Pages Advanced Worker
 // Supabase Backend, GoTrue Phone Auth, User Management, RLS & Cloudflare Turnstile
 
-const J = (o, s = 200) =>
+const J = (o, s = 200, extraHeaders = {}) =>
   new Response(JSON.stringify(o), {
     status: s,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
+    headers: Object.assign(
+      {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'strict-origin-when-cross-origin',
+        'permissions-policy': 'camera=(self), geolocation=(self)'
+      },
+      extraHeaders
+    )
   });
 
-const MAX = 3 * 1024 * 1024;
+// Maximum Content-Length and Request Body Size Limits
+const SIZE_LIMITS = {
+  DEFAULT_JSON: 1 * 1024 * 1024,      // 1 MB general JSON payload limit
+  RPC_PAYLOAD: 1 * 1024 * 1024,       // 1 MB RPC payload limit
+  USER_PAYLOAD: 512 * 1024,           // 512 KB user management payload limit
+  AUTH_PAYLOAD: 128 * 1024,           // 128 KB auth/password payload limit
+  ATTENDANCE: 250 * 1024,             // 250 KB attendance payload limit
+  SLIP: 60 * 1024,                    // 60 KB slip payload limit
+  APPLY: 3 * 1024 * 1024,             // 3 MB application payload limit
+  DOC_FILE: 10 * 1024 * 1024,         // 10 MB per employee document file
+  EVIDENCE_FILE: 50 * 1024 * 1024     // 50 MB per vehicle evidence file
+};
+
+const MAX = SIZE_LIMITS.APPLY;
 const DUTY_TAGS = ['delivery', 'production', 'godown'];
 const SYSTEM_ROLES = ['admin', 'owner', 'manager', 'employee'];
+
+// Strict allowlist of the 13 delivery and operational RPCs
+const ALLOWED_RPCS = new Set([
+  'record_production',
+  'transfer_stock',
+  'create_order',
+  'log_order_from_stop',
+  'plan_trip',
+  'confirm_loading',
+  'arrive_at_stop',
+  'deliver_stop',
+  'skip_stop',
+  'set_customer_location',
+  'close_trip',
+  'handover_cash',
+  'production_plan'
+]);
+
+function checkContentLength(req, maxLimit = SIZE_LIMITS.DEFAULT_JSON) {
+  const cl = req.headers.get('content-length');
+  if (cl !== null) {
+    const len = parseInt(cl, 10);
+    if (isNaN(len) || len < 0 || len > maxLimit) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function parseJsonBody(req, maxLimit = SIZE_LIMITS.DEFAULT_JSON) {
+  if (!checkContentLength(req, maxLimit)) {
+    return { error: 'payload_too_large' };
+  }
+  const text = await req.text();
+  if (text.length > maxLimit) {
+    return { error: 'payload_too_large' };
+  }
+  try {
+    return { data: text ? JSON.parse(text) : {} };
+  } catch (e) {
+    return { error: 'bad_json' };
+  }
+}
 
 function same(a, b) {
   a = String(a || '');
@@ -156,9 +221,8 @@ async function logAudit(env, caller, action, tableName, rowId, oldVal, newVal) {
 }
 
 async function verifyTurnstile(token, secret, ip) {
-  if (!secret) return true; // Turnstile not configured, allow
+  if (!secret) return false; // Fail closed when no secret is set
   if (!token) return false;
-  if (token === 'TEST_TURNSTILE_TOKEN' || token === 'mock_turnstile_token') return true;
 
   try {
     const formData = new URLSearchParams();
@@ -216,7 +280,7 @@ function buildCspHeader(env) {
 
   return [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+    "script-src 'self' https://challenges.cloudflare.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     `img-src 'self' data: blob: ${sbHosts}`,
@@ -236,18 +300,31 @@ export default {
     if (!u.pathname.startsWith('/api/')) {
       const res = await env.ASSETS.fetch(req);
       const ct = res.headers.get('content-type') || '';
+      const headers = new Headers(res.headers);
+      headers.set('X-Content-Type-Options', 'nosniff');
+      headers.set('X-Frame-Options', 'DENY');
+      headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+      headers.set('Permissions-Policy', 'camera=(self), geolocation=(self)');
       if (ct.includes('text/html') || u.pathname === '/' || u.pathname.endsWith('.html') || !u.pathname.includes('.')) {
-        const headers = new Headers(res.headers);
         headers.set('Content-Security-Policy', buildCspHeader(env));
-        headers.set('X-Content-Type-Options', 'nosniff');
-        headers.set('X-Frame-Options', 'DENY');
         return new Response(res.body, {
           status: res.status,
           statusText: res.statusText,
           headers
         });
       }
-      return res;
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers
+      });
+    }
+
+    // Global Content-Length check for mutation requests
+    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+      if (!checkContentLength(req, SIZE_LIMITS.EVIDENCE_FILE)) {
+        return J({ error: 'payload_too_large', message: 'Request exceeds maximum allowable size' }, 413);
+      }
     }
 
     const p = u.pathname;
@@ -269,7 +346,14 @@ export default {
       // 2. PHONE + PASSWORD AUTHENTICATION WITH TURNSTILE
       // -------------------------------------------------------------
       if (p === '/api/auth/login' && m === 'POST') {
-        const body = await req.json().catch(() => null);
+        const bodyRes = await parseJsonBody(req, SIZE_LIMITS.AUTH_PAYLOAD);
+        if (bodyRes.error === 'payload_too_large') {
+          return J({ error: 'payload_too_large', message: 'Request payload exceeds size limit' }, 413);
+        }
+        if (bodyRes.error === 'bad_json') {
+          return J({ error: 'Invalid phone number or password' }, 401);
+        }
+        const body = bodyRes.data || null;
         if (!body || !body.phone || !body.password) {
           return J({ error: 'Invalid phone number or password' }, 401);
         }
@@ -363,7 +447,14 @@ export default {
         const caller = await verifyAuth(req, env);
         if (!caller) return J({ error: 'Unauthorized' }, 401);
 
-        const body = await req.json().catch(() => null);
+        const bodyRes = await parseJsonBody(req, SIZE_LIMITS.AUTH_PAYLOAD);
+        if (bodyRes.error === 'payload_too_large') {
+          return J({ error: 'payload_too_large', message: 'Request payload exceeds size limit' }, 413);
+        }
+        if (bodyRes.error === 'bad_json') {
+          return J({ error: 'Invalid JSON payload' }, 400);
+        }
+        const body = bodyRes.data || {};
         const newPassword = String((body && body.new_password) || '').trim();
         if (newPassword.length < 8) {
           return J({ error: 'Password must be at least 8 characters' }, 400);
@@ -463,7 +554,14 @@ export default {
         const caller = await verifyAuth(req, env);
         if (!caller) return J({ error: 'Unauthorized' }, 401);
 
-        const body = await req.json().catch(() => null);
+        const bodyRes = await parseJsonBody(req, SIZE_LIMITS.USER_PAYLOAD);
+        if (bodyRes.error === 'payload_too_large') {
+          return J({ error: 'payload_too_large', message: 'Request payload exceeds size limit' }, 413);
+        }
+        if (bodyRes.error === 'bad_json') {
+          return J({ error: 'Invalid request body' }, 400);
+        }
+        const body = bodyRes.data || null;
         if (!body) return J({ error: 'Invalid request body' }, 400);
 
         const fullName = String(body.full_name || '').trim();
@@ -620,7 +718,14 @@ export default {
         if (!caller) return J({ error: 'Unauthorized' }, 401);
 
         const targetId = dutyTagsMatch[1];
-        const body = await req.json().catch(() => null);
+        const bodyRes = await parseJsonBody(req, SIZE_LIMITS.USER_PAYLOAD);
+        if (bodyRes.error === 'payload_too_large') {
+          return J({ error: 'payload_too_large', message: 'Request payload exceeds size limit' }, 413);
+        }
+        if (bodyRes.error === 'bad_json') {
+          return J({ error: 'Invalid duties payload' }, 400);
+        }
+        const body = bodyRes.data || null;
         if (!body || !Array.isArray(body.duties)) {
           return J({ error: 'Invalid duties payload' }, 400);
         }
@@ -803,139 +908,89 @@ export default {
 
       // -------------------------------------------------------------
       // 8B. SECURITY DEFINER RPC EXECUTION ENDPOINT (/api/rpc/:fn)
-      // Supports online-first outbox, idempotency deduplication, and offline sync
+      // Allowlist of 13 delivery RPCs, DB-level idempotency_keys & trip status, 502 on 5xx/exceptions
       // -------------------------------------------------------------
       const rpcMatch = /^\/api\/rpc\/([a-zA-Z0-9_]+)$/.exec(p);
       if (rpcMatch && m === 'POST') {
+        const fn = rpcMatch[1];
+
+        // 1. Strict allowlist check for the 13 delivery/operational RPCs
+        if (!ALLOWED_RPCS.has(fn)) {
+          return J({ error: 'not_found', message: 'RPC not permitted or not found' }, 404);
+        }
+
+        // 2. Caller authentication
         const caller = await verifyAuth(req, env);
         if (!caller) return J({ error: 'unauthorized', message: 'Authentication required' }, 401);
 
-        const fn = rpcMatch[1];
-        const body = await req.json().catch(() => ({}));
-        const idemKey = body.p_idempotency_key || body.idempotency_key;
+        // 3. Payload size check
+        const bodyRes = await parseJsonBody(req, SIZE_LIMITS.RPC_PAYLOAD);
+        if (bodyRes.error === 'payload_too_large') {
+          return J({ error: 'payload_too_large', message: 'RPC payload exceeds maximum allowed size' }, 413);
+        }
+        if (bodyRes.error === 'bad_json') {
+          return J({ error: 'bad_request', message: 'Invalid JSON payload' }, 400);
+        }
+        const body = bodyRes.data || {};
 
-        // Idempotency deduplication check via KV or memory
-        if (idemKey && env.KV) {
-          const cached = await env.KV.get('idem:' + idemKey);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            return J(Object.assign({ duplicate: true }, parsed), 200);
-          }
+        // 4. Ensure Supabase credentials are configured
+        if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+          return J({ error: 'bad_gateway', message: 'Database backend not configured' }, 502);
         }
 
-        // Check if trip was cancelled by manager while driver was offline
-        if (body.p_trip_id) {
-          if (body.trip_cancelled || body.p_trip_cancelled) {
-            return J(
-              {
-                ok: false,
-                error: 'trip_cancelled',
-                message: 'Trip was cancelled by manager while driver was offline'
-              },
-              409
-            );
-          }
-          if (env.KV) {
-            const isCancelled = await env.KV.get('cancelled_trip:' + body.p_trip_id);
-            if (isCancelled) {
-              return J(
-                {
-                  ok: false,
-                  error: 'trip_cancelled',
-                  message: 'Trip was cancelled by manager while driver was offline'
-                },
-                409
-              );
-            }
-          }
+        // 5. Forward to Supabase REST RPC endpoint
+        // Relies on public.idempotency_keys table and DB-level trip status checks
+        let sbRes;
+        try {
+          sbRes = await fetch(sbBase(env) + '/rest/v1/rpc/' + encodeURIComponent(fn), {
+            method: 'POST',
+            headers: {
+              apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+              authorization: req.headers.get('authorization') || ('Bearer ' + env.SUPABASE_SERVICE_ROLE_KEY),
+              'content-type': 'application/json',
+              prefer: 'return=representation'
+            },
+            body: JSON.stringify(body)
+          });
+        } catch (fetchErr) {
+          console.error(`Fetch exception communicating with Supabase RPC (${fn}):`, fetchErr);
+          // On exception return 502 so the outbox retries
+          return J(
+            {
+              ok: false,
+              error: 'bad_gateway',
+              message: 'Database RPC connection failed: ' + (fetchErr.message || String(fetchErr))
+            },
+            502
+          );
         }
 
-        // Optional Supabase REST /rpc/:fn pass-through
-        if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-          try {
-            const sbRes = await fetch(sbBase(env) + '/rest/v1/rpc/' + encodeURIComponent(fn), {
-              method: 'POST',
-              headers: {
-                apikey: env.SUPABASE_SERVICE_ROLE_KEY,
-                authorization: req.headers.get('authorization') || ('Bearer ' + env.SUPABASE_SERVICE_ROLE_KEY),
-                'content-type': 'application/json',
-                prefer: 'return=representation'
-              },
-              body: JSON.stringify(body)
-            });
-            const sbData = await sbRes.json().catch(() => ({}));
-            if (sbRes.ok) {
-              if (idemKey && env.KV) {
-                await env.KV.put('idem:' + idemKey, JSON.stringify(sbData), { expirationTtl: 86400 * 7 });
-              }
-              return J(Object.assign({ ok: true }, sbData), 200);
-            }
-            if (sbRes.status >= 400 && sbRes.status < 500) {
-              return J(Object.assign({ ok: false }, sbData), sbRes.status);
-            }
-          } catch (e) {}
+        // 6. Handle Supabase 5xx errors -> return 502 so client outbox retries
+        if (sbRes.status >= 500) {
+          const errBody = await sbRes.json().catch(() => ({}));
+          return J(
+            {
+              ok: false,
+              error: 'bad_gateway',
+              message: errBody.message || 'Database RPC internal error',
+              details: errBody
+            },
+            502
+          );
         }
 
-        // Deterministic local execution for dev / offline testing
-        let result = { ok: true, success: true, action: fn };
-
-        if (fn === 'deliver_stop') {
-          const now = new Date();
-          const yr = String(now.getFullYear()).slice(-2);
-          const nextYr = String(now.getFullYear() + 1).slice(-2);
-          const randSeq = String(Math.floor(1000 + Math.random() * 9000));
-          const officialInvoice = `SR/${yr}-${nextYr}/${randSeq}`;
-
-          result = {
-            ok: true,
-            success: true,
-            bill_id: officialInvoice,
-            official_invoice_no: officialInvoice,
-            provisional_id: body.p_provisional_id || null,
-            trip_id: body.p_trip_id,
-            customer_id: body.p_customer_id,
-            amount_received: body.p_amount_received || 0,
-            synced_at: new Date().toISOString()
-          };
-        } else if (fn === 'confirm_loading') {
-          result = {
-            ok: true,
-            success: true,
-            trip_id: body.p_trip_id,
-            status: 'on_route',
-            start_odometer: body.p_start_odometer
-          };
-        } else if (fn === 'arrive_at_stop') {
-          result = {
-            ok: true,
-            success: true,
-            trip_id: body.p_trip_id,
-            customer_id: body.p_customer_id,
-            arrived_at: new Date().toISOString()
-          };
-        } else if (fn === 'skip_stop') {
-          result = {
-            ok: true,
-            success: true,
-            trip_id: body.p_trip_id,
-            customer_id: body.p_customer_id,
-            status: 'skipped'
-          };
-        } else if (fn === 'close_trip') {
-          result = {
-            ok: true,
-            success: true,
-            trip_id: body.p_trip_id,
-            status: 'completed',
-            end_odometer: body.p_end_odometer
-          };
+        // 7. Handle Supabase 4xx business errors (e.g. 400, 401, 403, 409 conflict/trip_cancelled)
+        if (sbRes.status >= 400 && sbRes.status < 500) {
+          const errBody = await sbRes.json().catch(() => ({}));
+          return J(Object.assign({ ok: false }, errBody), sbRes.status);
         }
 
-        if (idemKey && env.KV) {
-          await env.KV.put('idem:' + idemKey, JSON.stringify(result), { expirationTtl: 86400 * 7 });
+        // 8. Handle Success (2xx)
+        const sbData = await sbRes.json().catch(() => ({}));
+        if (typeof sbData === 'object' && sbData !== null && !Array.isArray(sbData)) {
+          return J(Object.assign({ ok: true }, sbData), 200);
         }
-
-        return J(result, 200);
+        return J({ ok: true, data: sbData }, 200);
       }
 
       // -------------------------------------------------------------
@@ -950,6 +1005,7 @@ export default {
 
         if (p === '/api/invite' && m === 'POST') {
           if (!admin) return J({ error: 'unauthorized' }, 401);
+          if (!checkContentLength(req, SIZE_LIMITS.DEFAULT_JSON)) return J({ error: 'too_big' }, 413);
           const b = await req.json().catch(() => null);
           if (!b || !/^[a-z0-9]{6,16}$/.test(String(b.t || ''))) return J({ error: 'bad' }, 400);
           await env.KV.put('inv:' + b.t, '1', { expirationTtl: 60 * 60 * 24 * 30 });
@@ -957,8 +1013,9 @@ export default {
         }
 
         if (p === '/api/apply' && m === 'POST') {
+          if (!checkContentLength(req, SIZE_LIMITS.APPLY)) return J({ error: 'too_big' }, 413);
           const tx = await req.text();
-          if (tx.length > MAX) return J({ error: 'too_big' }, 413);
+          if (tx.length > SIZE_LIMITS.APPLY) return J({ error: 'too_big' }, 413);
           let a;
           try { a = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
           if (!a || a.srjoin !== 1 || !/^[A-Za-z0-9_-]{4,40}$/.test(String(a.id || '')) || !/^[a-z0-9]{6,16}$/.test(String(a.t || ''))) return J({ error: 'bad' }, 400);
@@ -982,8 +1039,9 @@ export default {
         }
 
         if (p === '/api/att' && m === 'POST') {
+          if (!checkContentLength(req, SIZE_LIMITS.ATTENDANCE)) return J({ error: 'too_big' }, 413);
           const tx = await req.text();
-          if (tx.length > 250000) return J({ error: 'too_big' }, 413);
+          if (tx.length > SIZE_LIMITS.ATTENDANCE) return J({ error: 'too_big' }, 413);
           let b;
           try { b = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
           if (!b || !/^[a-z0-9]{16,40}$/.test(String(b.tok || '')) || (b.kind !== 'in' && b.kind !== 'out')) return J({ error: 'bad' }, 400);
@@ -1028,8 +1086,9 @@ export default {
 
         if (p === '/api/slip' && m === 'POST') {
           if (!admin) return J({ error: 'unauthorized' }, 401);
+          if (!checkContentLength(req, SIZE_LIMITS.SLIP)) return J({ error: 'too_big' }, 413);
           const tx = await req.text();
-          if (tx.length > 60000) return J({ error: 'too_big' }, 413);
+          if (tx.length > SIZE_LIMITS.SLIP) return J({ error: 'too_big' }, 413);
           const b = JSON.parse(tx);
           if (!/^[a-z0-9]{16,40}$/.test(String(b.tok || '')) || !b.item || !/^[A-Za-z0-9_-]{4,40}$/.test(String(b.item.id || ''))) return J({ error: 'bad' }, 400);
           const old = await env.KV.get('slips:' + b.tok);
