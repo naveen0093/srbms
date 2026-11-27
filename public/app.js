@@ -4022,6 +4022,16 @@ function showDeliverModal(stopId, tripId) {
           '* Rates entered manually per Decision 2 (rate_source: \'manual\', no price-list enforcement).' +
         '</div>' +
       '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:0 4px;">' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">' +
+          '<input type="checkbox" id="del-gst" style="width:16px;height:16px;">' +
+          '<span>Bill with GST (5% tax computed)</span>' +
+        '</label>' +
+      '</div>' +
+      '<div id="del-tax-breakdown" style="display:none;background:var(--surface);border-radius:6px;padding:6px 10px;margin-bottom:10px;font-size:12px;">' +
+        '<div style="display:flex;justify-content:space-between;"><span>Subtotal:</span><span id="del-subtotal-val">₹0</span></div>' +
+        '<div style="display:flex;justify-content:space-between;color:var(--muted);"><span>GST (5%):</span><span id="del-tax-val">₹0</span></div>' +
+      '</div>' +
       '<div style="display:flex;justify-content:space-between;align-items:center;font-size:16px;font-weight:800;margin-bottom:14px;padding:0 4px;">' +
         '<span>Invoice Bill Total:</span>' +
         '<span style="color:var(--brand);" id="del-bill-total">' + inr(sum(items, function(x){ return (x.cases||1) * (x.rate||40); })) + '</span>' +
@@ -4070,15 +4080,29 @@ function showDeliverModal(stopId, tripId) {
 
 function recalcDeliveryModal(cust) {
   var rows = document.querySelectorAll('.del-row');
-  var total = 0;
+  var subtotal = 0;
   rows.forEach(function(r) {
     var q = +((r.querySelector('.del-qty') || {}).value) || 0;
     var rate = +((r.querySelector('.del-rate') || {}).value) || 0;
     var lineTot = q * rate;
-    total += lineTot;
+    subtotal += lineTot;
     var lineEl = r.querySelector('.del-line-tot');
     if (lineEl) lineEl.textContent = inr(lineTot);
   });
+
+  var gstBox = document.getElementById('del-gst');
+  var isGst = !!(gstBox && gstBox.checked);
+  var tax = isGst ? round2(subtotal * 0.05) : 0;
+  var total = subtotal + tax;
+
+  var taxSection = document.getElementById('del-tax-breakdown');
+  var subValEl = document.getElementById('del-subtotal-val');
+  var taxValEl = document.getElementById('del-tax-val');
+  if (taxSection) {
+    taxSection.style.display = isGst ? 'block' : 'none';
+    if (subValEl) subValEl.textContent = inr(subtotal);
+    if (taxValEl) taxValEl.textContent = inr(tax);
+  }
 
   var totEl = document.getElementById('del-bill-total');
   if (totEl) totEl.textContent = inr(total);
@@ -4090,6 +4114,10 @@ function recalcDeliveryModal(cust) {
       paidEl.value = '0';
     } else if (paidEl.dataset.manual !== '1') {
       paidEl.value = total;
+    } else {
+      // Cap manual payment at bill total
+      var currPaid = +paidEl.value || 0;
+      if (currPaid > total) paidEl.value = total;
     }
   }
 
@@ -4930,8 +4958,13 @@ document.addEventListener('submit', function(e) {
         totalCases += qty;
         lineItems.push({
           p: prod,
+          product_name: prod,
           q: qty,
+          cases: qty,
+          bottles: qty * fgPer(prod),
           r: rate,
+          rate_per_case: rate,
+          case_size: fgPer(prod),
           rate_source: 'manual',
           entered_by: (CURRENT_PROFILE && CURRENT_PROFILE.full_name) || CURRENT_ROLE
         });
@@ -4943,8 +4976,14 @@ document.addEventListener('submit', function(e) {
       return;
     }
 
+    var isGst = !!($('#del-gst') && $('#del-gst').checked);
+    var subtotalAmt = totalAmt;
+    var taxAmt = isGst ? round2(subtotalAmt * 0.05) : 0;
+    var finalTotal = subtotalAmt + taxAmt;
+
     var payMode = $('#del-pay-mode') ? $('#del-pay-mode').value : 'Cash';
-    var paidAmt = $('#del-paid-amount') ? +$('#del-paid-amount').value : totalAmt;
+    var rawPaid = $('#del-paid-amount') ? +$('#del-paid-amount').value : finalTotal;
+    var paidAmt = Math.min(Math.max(rawPaid, 0), finalTotal);
     var emptyCans = $('#del-empty-cans') ? +$('#del-empty-cans').value : 0;
     var notes = $('#del-notes') ? $('#del-notes').value.trim() : '';
 
@@ -4957,7 +4996,10 @@ document.addEventListener('submit', function(e) {
       date: today(),
       cust: cust ? cust.id : '',
       items: lineItems,
-      total: totalAmt,
+      subtotal: subtotalAmt,
+      tax: taxAmt,
+      gst: isGst,
+      total: finalTotal,
       paid: paidAmt,
       mode: payMode,
       rate_source: 'manual',
@@ -4985,7 +5027,7 @@ document.addEventListener('submit', function(e) {
       provisional_id: provId,
       delivered_at: new Date().toISOString(),
       delivered_cases: totalCases,
-      amount: totalAmt,
+      amount: finalTotal,
       paid: paidAmt,
       payment_mode: payMode,
       empty_cans_returned: emptyCans,
@@ -5011,13 +5053,14 @@ document.addEventListener('submit', function(e) {
       p_stop_id: stopId,
       p_customer_id: cust ? cust.id : '',
       p_items: lineItems,
-      p_total: totalAmt,
+      p_total: finalTotal,
       p_amount_received: paidAmt,
       p_payment_mode: payMode,
       p_empty_cans_returned: emptyCans,
       p_notes: notes,
       p_provisional_id: provId,
-      p_offline: (typeof navigator !== 'undefined' && navigator.onLine === false)
+      p_offline: (typeof navigator !== 'undefined' && navigator.onLine === false),
+      p_gst: isGst
     };
 
     onlineFirstWrite('deliver_stop', '/api/rpc/deliver_stop', deliveryPayload, {
@@ -5212,13 +5255,15 @@ document.addEventListener('input', function(e) {
 document.addEventListener('change', function(e) {
   var t = e.target;
   if (!t) return;
-  if (t.id === 'del-pay-mode') {
+  if (t.id === 'del-pay-mode' || t.id === 'del-gst') {
     var f = t.closest('#deliver-stop-form');
     if (f) {
       var stop = (S.tripStops || []).find(function(s) { return s.id === f.dataset.stopId; });
       var cust = stop ? (S.customers || []).find(function(c) { return c.id === stop.customer_id; }) : null;
-      var paidEl = document.getElementById('del-paid-amount');
-      if (paidEl) delete paidEl.dataset.manual;
+      if (t.id === 'del-pay-mode') {
+        var paidEl = document.getElementById('del-paid-amount');
+        if (paidEl) delete paidEl.dataset.manual;
+      }
       recalcDeliveryModal(cust);
     }
   }

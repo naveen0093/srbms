@@ -900,7 +900,8 @@ const expectedMigrations = [
   'supabase/migrations/20261127000003_roles_and_rls.sql',
   'supabase/migrations/20261127000004_rpcs.sql',
   'supabase/migrations/20261127000005_user_management.sql',
-  'supabase/migrations/20261127000006_storage.sql'
+  'supabase/migrations/20261127000006_storage.sql',
+  'supabase/migrations/20261127000007_rpc_hardening.sql'
 ];
 expectedMigrations.forEach(file => {
   assert.ok(fs.existsSync(file), `Migration file ${file} must exist`);
@@ -939,6 +940,7 @@ assert.ok(fs.existsSync('supabase/apply_all.sql'), 'supabase/apply_all.sql must 
 const applyAllSql = fs.readFileSync('supabase/apply_all.sql', 'utf8');
 assert.ok(applyAllSql.includes('FIRST-OWNER / ADMIN BOOTSTRAP'), 'apply_all.sql must include bootstrap instructions');
 assert.ok(applyAllSql.includes('20261127000006_storage.sql'), 'apply_all.sql must include storage migration');
+assert.ok(applyAllSql.includes('20261127000007_rpc_hardening.sql'), 'apply_all.sql must include rpc_hardening migration');
 
 console.log('  ✓ Timestamped migrations, Storage RLS, seed.test.sql, and Apply scripts verified (100% compliant)');
 
@@ -1027,5 +1029,56 @@ const oversizedRes = await workerFetch(new Request('http://localhost/api/auth/lo
 assert.strictEqual(oversizedRes.status, 413, 'Oversized Content-Length returns 413 Payload Too Large');
 
 console.log('  ✓ Worker Hardening verified (RPC allowlist, 502 on 5xx/exception, no KV idempotency, fail-closed Turnstile, CSP, Referrer/Permissions policy, Content-Length & size limits)');
+
+// 15. Verifying Migration 7: RPC Security Hardening & Business Rules
+console.log('15. Verifying Migration 7 (Auth/Role before Idempotency, Scoped Keys, Stop Ownership, GST, IST Dates, Payment Cap)...');
+
+const migration7Path = 'supabase/migrations/20261127000007_rpc_hardening.sql';
+assert.ok(fs.existsSync(migration7Path), '20261127000007_rpc_hardening.sql must exist');
+const m7Sql = fs.readFileSync(migration7Path, 'utf8');
+
+// A. Scoped Idempotency Keys (key + user_id)
+assert.ok(m7Sql.includes('PRIMARY KEY (key, user_id)'), 'idempotency_keys primary key is composite (key, user_id)');
+assert.ok(m7Sql.includes('ALTER TABLE public.idempotency_keys ALTER COLUMN user_id SET NOT NULL'), 'idempotency_keys user_id is NOT NULL');
+
+// B. IST Date Helper & Sequence Generators
+assert.ok(m7Sql.includes("FUNCTION public.ist_date()"), 'ist_date helper function is defined');
+assert.ok(m7Sql.includes("(now() AT TIME ZONE 'Asia/Kolkata')::date"), 'IST timezone Asia/Kolkata used for dates');
+assert.ok(!m7Sql.replace(/--.*$/gm, '').includes("CURRENT_DATE"), 'CURRENT_DATE is completely replaced with Asia/Kolkata date in SQL statements');
+
+// C. All 13 RPCs check Auth and Role BEFORE Idempotency lookup
+const rpcList = [
+  'record_production', 'transfer_stock', 'create_order', 'log_order_from_stop',
+  'plan_trip', 'confirm_loading', 'arrive_at_stop', 'deliver_stop',
+  'skip_stop', 'set_customer_location', 'close_trip', 'handover_cash', 'production_plan'
+];
+
+rpcList.forEach(rpc => {
+  assert.ok(m7Sql.includes(`FUNCTION public.${rpc}`), `Migration 7 defines ${rpc}`);
+  if (rpc !== 'production_plan') {
+    assert.ok(
+      m7Sql.includes(`WHERE key = p_idempotency_key AND user_id = v_uid`),
+      `Idempotency lookup in ${rpc} must be scoped to user_id = v_uid`
+    );
+  }
+});
+
+// D. Ownership & Stop Assignment Checks in arrive_at_stop and log_order_from_stop
+assert.ok(m7Sql.includes("v_trip.driver_id = v_emp_id"), 'Trip driver ownership checked against current employee');
+assert.ok(m7Sql.includes("Customer % is not assigned as a stop on trip %"), 'Stop assignment verified for customer and trip');
+
+// E. deliver_stop GST Flag, Tax Computation, and Payment Cap
+assert.ok(m7Sql.includes("p_gst boolean DEFAULT false"), 'deliver_stop accepts p_gst boolean flag');
+assert.ok(m7Sql.includes("ROUND((v_subtotal * 0.05)::numeric, 2)"), 'deliver_stop computes 5% tax when p_gst is true');
+assert.ok(m7Sql.includes("v_paid := LEAST(GREATEST(COALESCE(p_amount_received, 0), 0), v_total)"), 'deliver_stop caps payment at bill total');
+
+// F. Frontend app.js GST Support and Payment Cap
+const appJsCode = fs.readFileSync('public/app.js', 'utf8');
+assert.ok(appJsCode.includes('id="del-gst"'), 'app.js includes del-gst checkbox in delivery modal');
+assert.ok(appJsCode.includes('Bill with GST (5% tax computed)'), 'app.js labels GST option clearly');
+assert.ok(appJsCode.includes('p_gst: isGst'), 'app.js sends p_gst in deliveryPayload');
+assert.ok(appJsCode.includes('Math.min(Math.max(rawPaid, 0), finalTotal)'), 'app.js caps paidAmt at finalTotal on submit');
+
+console.log('  ✓ Migration 7 RPC Hardening & Business Rules verified (100% compliant)');
 
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

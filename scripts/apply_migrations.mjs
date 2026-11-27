@@ -22,7 +22,8 @@ const MIGRATION_CHAIN = [
   '20261127000003_roles_and_rls.sql',
   '20261127000004_rpcs.sql',
   '20261127000005_user_management.sql',
-  '20261127000006_storage.sql'
+  '20261127000006_storage.sql',
+  '20261127000007_rpc_hardening.sql'
 ];
 
 /*

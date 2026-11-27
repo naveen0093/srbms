@@ -36,3 +36,6 @@
 
 -- File 6: Storage Buckets & Policies (Private Buckets)
 \ir migrations/20261127000006_storage.sql
+
+-- File 7: RPC Security Hardening & Business Rules (Auth Before Idempotency, Scoped Keys, IST Dates, GST Flag, Payment Capping)
+\ir migrations/20261127000007_rpc_hardening.sql
