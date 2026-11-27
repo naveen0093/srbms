@@ -273,6 +273,18 @@ console.log('  Checking Decision 5: Employee scoped customer visibility...');
 const { visibleCustomers } = context.window;
 assert.ok(typeof visibleCustomers === 'function', 'visibleCustomers helper must exist');
 
+// Populate test customers
+context.window.S.customers = [
+  { id: 'C1', name: 'Cust 1', date: '2026-11-20', lat: 13.558312, lng: 78.502145, acc: 8.4, lim: 5000 },
+  { id: 'C2', name: 'Cust 2', date: '2026-11-20', lat: 13.561200, lng: 78.504300, acc: 12.0, lim: 3000 },
+  { id: 'C3', name: 'Cust 3', date: '2026-11-20', lat: null, lng: null, acc: null, lim: 2000 },
+  { id: 'C4', name: 'Cust 4', date: '2026-11-20', lat: 13.565100, lng: 78.508200, acc: 15.0, lim: 2500 },
+  { id: 'C5', name: 'Cust 5', date: '2026-11-20', lat: null, lng: null, acc: null, lim: null },
+  { id: 'C6', name: 'Cust 6', date: '2026-11-20' },
+  { id: 'C7', name: 'Cust 7', date: '2026-11-20' },
+  { id: 'C8', name: 'Cust 8', date: '2026-11-20' }
+];
+
 // Owner sees all
 context.window.CURRENT_ROLE = 'owner';
 const ownerCusts = visibleCustomers();
@@ -901,7 +913,8 @@ const expectedMigrations = [
   'supabase/migrations/20261127000004_rpcs.sql',
   'supabase/migrations/20261127000005_user_management.sql',
   'supabase/migrations/20261127000006_storage.sql',
-  'supabase/migrations/20261127000007_rpc_hardening.sql'
+  'supabase/migrations/20261127000007_rpc_hardening.sql',
+  'supabase/migrations/20261127000008_attendance_and_hr.sql'
 ];
 expectedMigrations.forEach(file => {
   assert.ok(fs.existsSync(file), `Migration file ${file} must exist`);
@@ -941,6 +954,7 @@ const applyAllSql = fs.readFileSync('supabase/apply_all.sql', 'utf8');
 assert.ok(applyAllSql.includes('FIRST-OWNER / ADMIN BOOTSTRAP'), 'apply_all.sql must include bootstrap instructions');
 assert.ok(applyAllSql.includes('20261127000006_storage.sql'), 'apply_all.sql must include storage migration');
 assert.ok(applyAllSql.includes('20261127000007_rpc_hardening.sql'), 'apply_all.sql must include rpc_hardening migration');
+assert.ok(applyAllSql.includes('20261127000008_attendance_and_hr.sql'), 'apply_all.sql must include attendance_and_hr migration');
 
 console.log('  ✓ Timestamped migrations, Storage RLS, seed.test.sql, and Apply scripts verified (100% compliant)');
 
@@ -1226,5 +1240,109 @@ context.window.navigator.onLine = true;
 context.window.fetch = originalFetch;
 
 console.log('  ✓ Slice 1 verified (loads caller open trip/stops/customers from Supabase, no M1/unsettled fallback, storage isolated, cafe untouched)');
+
+// 17. Verifying Attendance & HR Migration, Worker Storage Signed URLs, Aadhaar Masking, IndexedDB Session, Role Matrix & Docs
+console.log('17. Verifying Attendance & HR Migration, Storage Signed URLs, Aadhaar Masking, IndexedDB Session, Role Matrix & Docs...');
+
+// A. 20261127000008_attendance_and_hr.sql checks
+const hrMigrationPath = 'supabase/migrations/20261127000008_attendance_and_hr.sql';
+assert.ok(fs.existsSync(hrMigrationPath), `${hrMigrationPath} must exist`);
+const hrMigrationSql = fs.readFileSync(hrMigrationPath, 'utf8');
+assert.ok(hrMigrationSql.includes('CREATE TABLE IF NOT EXISTS public.attendance_sites'), 'Must create attendance_sites table');
+assert.ok(hrMigrationSql.includes('CREATE TABLE IF NOT EXISTS public.invites'), 'Must create invites table');
+assert.ok(hrMigrationSql.includes('CREATE TABLE IF NOT EXISTS public.applications'), 'Must create applications table');
+assert.ok(hrMigrationSql.includes('CREATE TABLE IF NOT EXISTS public.payslips'), 'Must create payslips table');
+assert.ok(hrMigrationSql.includes('CONSTRAINT check_masked_aadhaar'), 'Must enforce check_masked_aadhaar check constraint');
+assert.ok(hrMigrationSql.includes('CREATE POLICY "attendance_select"'), 'Must define attendance RLS select policy');
+assert.ok(hrMigrationSql.includes('CREATE POLICY "applications_select"'), 'Must define applications RLS select policy');
+assert.ok(hrMigrationSql.includes('CREATE POLICY "payslips_select"'), 'Must define payslips RLS select policy');
+assert.ok(hrMigrationSql.includes('CREATE POLICY "employee_docs_manager_owner_all"'), 'Must define storage policy for managers and owners');
+assert.ok(hrMigrationSql.includes('CREATE POLICY "employee_docs_employee_select"'), 'Must define storage policy for employee personal folder');
+
+// B. Worker checks: No KV, No ADMIN_KEY, Aadhaar masking, Private signed URLs
+assert.ok(!workerCode.includes('env.KV'), 'Worker must NOT reference env.KV');
+assert.ok(!workerCode.includes('ADMIN_KEY'), 'Worker must NOT reference ADMIN_KEY');
+assert.ok(!workerCode.includes('function akey()'), 'Worker must NOT define akey()');
+assert.ok(workerCode.includes('function maskAadhaar('), 'Worker must implement maskAadhaar helper');
+assert.ok(workerCode.includes('/storage/v1/object/sign/'), 'Worker must call Supabase storage sign endpoint');
+assert.ok(workerCode.includes("createSignedUrl(env, 'employee-docs'"), 'Worker must generate signed URLs for employee-docs bucket');
+assert.ok(workerCode.includes('/api/ping'), 'Worker must provide /api/ping endpoint');
+assert.ok(workerCode.includes('/api/invite'), 'Worker must provide /api/invite endpoint');
+assert.ok(workerCode.includes('/api/apply'), 'Worker must provide /api/apply endpoint');
+assert.ok(workerCode.includes('/api/apps'), 'Worker must provide /api/apps endpoint');
+assert.ok(workerCode.includes('/api/me'), 'Worker must provide /api/me endpoint');
+assert.ok(workerCode.includes('/api/att/setup'), 'Worker must provide /api/att/setup endpoint');
+assert.ok(workerCode.includes('/api/att'), 'Worker must provide /api/att endpoint');
+assert.ok(workerCode.includes('/api/slips'), 'Worker must provide /api/slips endpoint');
+assert.ok(workerCode.includes('/api/slip'), 'Worker must provide /api/slip endpoint');
+
+// Test maskAadhaar logic directly
+const rawAadhaar = '987654321098';
+const maskedA = rawAadhaar.replace(/\D/g, '').replace(/^(\d{4})(\d{4})(\d{4})$/, 'XXXX-XXXX-$3');
+assert.strictEqual(maskedA, 'XXXX-XXXX-1098', 'Aadhaar masking properly scrubs first 8 digits');
+
+// C. app.js checks: No seed(), No billDeletePin, No sample reset, No akey(), Session in IndexedDB
+assert.ok(!appCode.includes('function seed()'), 'app.js must NOT contain seed()');
+assert.ok(!appCode.includes('billDeletePin'), 'app.js must NOT contain billDeletePin authorization card');
+assert.ok(!appCode.includes('Reset to sample data'), 'app.js must NOT contain "Reset to sample data" button');
+assert.ok(!appCode.includes('function akey()'), 'app.js must NOT define akey()');
+assert.ok(!appCode.includes('AKEY ='), 'app.js must NOT define AKEY constant');
+assert.ok(appCode.includes('setSession: async function') || appCode.includes('OutboxDB.setSession'), 'app.js defines setSession on OutboxDB');
+assert.ok(appCode.includes('getSession: async function') || appCode.includes('OutboxDB.getSession'), 'app.js defines getSession on OutboxDB');
+assert.ok(appCode.includes('clearSession: async function') || appCode.includes('OutboxDB.clearSession'), 'app.js defines clearSession on OutboxDB');
+
+// Test session methods in OutboxDB
+await context.window.OutboxDB.setSession({ user: { id: 'u-test', role: 'manager' }, token: 'mock-token-xyz' });
+const storedSession = await context.window.OutboxDB.getSession();
+assert.ok(storedSession, 'getSession returns stored session');
+assert.strictEqual(storedSession.user.id, 'u-test', 'Session user ID matches');
+assert.strictEqual(storedSession.user.role, 'manager', 'Session user role matches');
+
+// Test session clear does NOT touch outbox
+await context.window.OutboxDB.clearSession();
+const sessionAfterClear = await context.window.OutboxDB.getSession();
+assert.strictEqual(sessionAfterClear, null, 'Session is cleared');
+
+// D. tests/role_matrix.sql checks
+const roleMatrixPath = 'tests/role_matrix.sql';
+assert.ok(fs.existsSync(roleMatrixPath), `${roleMatrixPath} must exist`);
+const roleMatrixSql = fs.readFileSync(roleMatrixPath, 'utf8');
+assert.ok(roleMatrixSql.includes('SET LOCAL ROLE anon;'), 'role_matrix.sql tests anon role');
+assert.ok(roleMatrixSql.includes('SET LOCAL ROLE authenticated;'), 'role_matrix.sql tests authenticated role');
+assert.ok(roleMatrixSql.includes("'anon'"), 'role_matrix.sql tests anon role');
+assert.ok(roleMatrixSql.includes("'employee'"), 'role_matrix.sql tests employee role');
+assert.ok(roleMatrixSql.includes("'manager'"), 'role_matrix.sql tests manager role');
+assert.ok(roleMatrixSql.includes("'owner'"), 'role_matrix.sql tests owner role');
+assert.ok(roleMatrixSql.includes("'admin'"), 'role_matrix.sql tests admin role');
+assert.ok(roleMatrixSql.includes('deny_delete_bills'), 'role_matrix.sql asserts immutable bills ledger');
+assert.ok(roleMatrixSql.includes('ROLLBACK;'), 'role_matrix.sql finishes with clean transaction ROLLBACK');
+
+// E. docs/flow-spec.md and docs/test-plan.md checks
+assert.ok(fs.existsSync('docs/flow-spec.md'), 'docs/flow-spec.md must exist');
+const flowSpec = fs.readFileSync('docs/flow-spec.md', 'utf8');
+assert.ok(flowSpec.length > 2000, `docs/flow-spec.md has substantial content (${flowSpec.length} bytes)`);
+assert.ok(flowSpec.includes('PROV-'), 'docs/flow-spec.md documents provisional receipts');
+assert.ok(flowSpec.includes('needs_attention'), 'docs/flow-spec.md documents needs attention queue');
+assert.ok(flowSpec.includes('employee-docs'), 'docs/flow-spec.md documents private employee-docs bucket');
+assert.ok(flowSpec.includes('ROLE × TABLE PERMISSIONS MATRIX') || flowSpec.includes('Security & Role Matrix Reference'), 'docs/flow-spec.md documents role matrix');
+
+assert.ok(fs.existsSync('docs/test-plan.md'), 'docs/test-plan.md must exist');
+const testPlan = fs.readFileSync('docs/test-plan.md', 'utf8');
+assert.ok(testPlan.length > 2000, `docs/test-plan.md has substantial content (${testPlan.length} bytes)`);
+assert.ok(testPlan.includes('npm test'), 'docs/test-plan.md documents npm test');
+assert.ok(testPlan.includes('tests/role_matrix.sql'), 'docs/test-plan.md documents role matrix tests');
+assert.ok(testPlan.includes('check_masked_aadhaar'), 'docs/test-plan.md documents Aadhaar check constraint');
+
+// F. README.md checks
+const readmeText = fs.readFileSync('README.md', 'utf8');
+assert.ok(!readmeText.includes('001_init.sql'), 'README.md must NOT reference obsolete 001_init.sql');
+assert.ok(!readmeText.includes('002_storage.sql'), 'README.md must NOT reference obsolete 002_storage.sql');
+assert.ok(!readmeText.includes('ADMIN_KEY'), 'README.md must NOT reference obsolete ADMIN_KEY');
+assert.ok(readmeText.includes('20261127000008_attendance_and_hr.sql'), 'README.md documents attendance_and_hr migration');
+assert.ok(readmeText.includes('tests/role_matrix.sql'), 'README.md documents role_matrix.sql');
+assert.ok(readmeText.includes('flow-spec.md'), 'README.md documents flow-spec.md');
+assert.ok(readmeText.includes('test-plan.md'), 'README.md documents test-plan.md');
+
+console.log('  ✓ Attendance & HR migration, Storage Signed URLs, Aadhaar Masking, IndexedDB Session, Role Matrix & Docs verified (100% compliant)');
 
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

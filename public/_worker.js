@@ -124,6 +124,74 @@ async function sbAdmin(env, path, opt = {}) {
   return fetch(sbBase(env) + '/auth/v1/admin/' + path, Object.assign({}, opt, { headers }));
 }
 
+function base64ToUint8Array(base64Str) {
+  const clean = base64Str.replace(/^data:[^;]+;base64,/, '');
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(clean, 'base64');
+  }
+  const bin = atob(clean);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function maskAadhaar(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return 'XXXX XXXX ' + digits.slice(-4);
+  }
+  return 'Not provided';
+}
+
+async function uploadStorageObject(env, bucket, filePath, mimeType, data) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return null;
+  const url = sbBase(env) + '/storage/v1/object/' + encodeURIComponent(bucket) + '/' + filePath;
+  let bodyData = data;
+  if (typeof data === 'string' && data.startsWith('data:')) {
+    bodyData = base64ToUint8Array(data);
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: serviceHeaders(env, {
+        'content-type': mimeType || 'image/jpeg',
+        'x-upsert': 'true'
+      }),
+      body: bodyData
+    });
+    return res.ok;
+  } catch (err) {
+    console.error(`Storage upload error (${bucket}/${filePath}):`, err);
+    return false;
+  }
+}
+
+async function createSignedUrl(env, bucket, filePath, expiresIn = 3600) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !filePath) return null;
+  if (filePath.startsWith('http://') || filePath.startsWith('https://') || filePath.startsWith('data:')) {
+    return filePath;
+  }
+  const cleanPath = filePath.replace(/^\/+/, '');
+  const url = sbBase(env) + '/storage/v1/object/sign/' + encodeURIComponent(bucket) + '/' + cleanPath;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: serviceHeaders(env, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ expiresIn })
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || !data.signedURL) return null;
+    return sbBase(env) + '/storage/v1' + data.signedURL;
+  } catch (err) {
+    console.error(`Storage sign error (${bucket}/${filePath}):`, err);
+    return null;
+  }
+}
+
 function formatPhone(raw) {
   const d = String(raw || '').replace(/\D/g, '');
   if (d.length === 10 && /^[6-9]/.test(d)) return '+91' + d;
@@ -1042,111 +1110,459 @@ export default {
       }
 
       // -------------------------------------------------------------
-      // 9. LEGACY KV / ATTENDANCE / INVITATION SUPPORT
+      // 9. ATTENDANCE, APPLICATIONS, INVITES & PAYSLIPS (SUPABASE BACKED)
+      // Completely eliminates legacy KV, admin secret keys, and client akey().
+      // Uses Supabase tables and private storage buckets with signed URLs.
       // -------------------------------------------------------------
-      if (env.KV && env.ADMIN_KEY) {
-        const admin = same(req.headers.get('x-admin-key'), env.ADMIN_KEY);
+      if (p === '/api/ping' && m === 'GET') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        return J({ ok: true, user: caller.profile });
+      }
 
-        if (p === '/api/ping' && m === 'GET') {
-          return admin ? J({ ok: true }) : J({ error: 'unauthorized' }, 401);
+      if (p === '/api/invite' && m === 'POST') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        if (!checkContentLength(req, SIZE_LIMITS.DEFAULT_JSON)) return J({ error: 'too_big' }, 413);
+        const b = await req.json().catch(() => null);
+        if (!b || !/^[a-z0-9]{6,16}$/.test(String(b.t || ''))) return J({ error: 'bad' }, 400);
+
+        const dept = String(b.department || 'Water Plant');
+        const targetPhone = formatPhone(b.target_phone || b.to) || null;
+        const insRes = await sbRest(env, 'invites', {
+          method: 'POST',
+          headers: { prefer: 'return=minimal' },
+          body: JSON.stringify({
+            code: b.t,
+            department: dept,
+            target_phone: targetPhone,
+            created_by: caller.user.id
+          })
+        });
+        if (!insRes.ok) return J({ error: 'save_failed' }, 502);
+        return J({ ok: true });
+      }
+
+      if (p === '/api/apply' && m === 'POST') {
+        if (!checkContentLength(req, SIZE_LIMITS.APPLY)) return J({ error: 'too_big' }, 413);
+        const tx = await req.text();
+        if (tx.length > SIZE_LIMITS.APPLY) return J({ error: 'too_big' }, 413);
+        let a;
+        try { a = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
+        if (!a || a.srjoin !== 1 || !/^[A-Za-z0-9_-]{4,40}$/.test(String(a.id || '')) || !/^[a-z0-9]{6,16}$/.test(String(a.t || ''))) {
+          return J({ error: 'bad' }, 400);
         }
 
-        if (p === '/api/invite' && m === 'POST') {
-          if (!admin) return J({ error: 'unauthorized' }, 401);
-          if (!checkContentLength(req, SIZE_LIMITS.DEFAULT_JSON)) return J({ error: 'too_big' }, 413);
-          const b = await req.json().catch(() => null);
-          if (!b || !/^[a-z0-9]{6,16}$/.test(String(b.t || ''))) return J({ error: 'bad' }, 400);
-          await env.KV.put('inv:' + b.t, '1', { expirationTtl: 60 * 60 * 24 * 30 });
-          return J({ ok: true });
+        // 1. Verify invite token in public.invites
+        const invRes = await sbRest(env, 'invites?code=eq.' + encodeURIComponent(a.t) + '&used_at=is.null&select=id,code,department,expires_at');
+        if (!invRes.ok) return J({ error: 'db_error' }, 502);
+        const invRows = await invRes.json().catch(() => []);
+        if (!Array.isArray(invRows) || !invRows.length) return J({ error: 'link_invalid' }, 403);
+        const invite = invRows[0];
+        if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+          return J({ error: 'link_expired' }, 403);
         }
 
-        if (p === '/api/apply' && m === 'POST') {
-          if (!checkContentLength(req, SIZE_LIMITS.APPLY)) return J({ error: 'too_big' }, 413);
-          const tx = await req.text();
-          if (tx.length > SIZE_LIMITS.APPLY) return J({ error: 'too_big' }, 413);
-          let a;
-          try { a = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
-          if (!a || a.srjoin !== 1 || !/^[A-Za-z0-9_-]{4,40}$/.test(String(a.id || '')) || !/^[a-z0-9]{6,16}$/.test(String(a.t || ''))) return J({ error: 'bad' }, 400);
-          if (await env.KV.get('app:' + a.id)) return J({ ok: true });
-          if (!(await env.KV.get('inv:' + a.t))) return J({ error: 'link_invalid' }, 403);
-          await env.KV.put('app:' + a.id, tx, { expirationTtl: 60 * 60 * 24 * 60 });
-          await env.KV.delete('inv:' + a.t);
-          return J({ ok: true });
+        // 2. Check duplicate application ID
+        const exRes = await sbRest(env, 'applications?id=eq.' + encodeURIComponent(a.id) + '&select=id');
+        if (exRes.ok) {
+          const exRows = await exRes.json().catch(() => []);
+          if (Array.isArray(exRows) && exRows.length > 0) return J({ ok: true });
         }
 
-        if (p === '/api/me' && m === 'GET') {
-          const t = u.searchParams.get('tok') || '';
-          if (!/^[a-z0-9]{16,40}$/.test(t)) return J({ error: 'bad' }, 400);
-          const e = await env.KV.get('emp:' + t);
-          if (!e) return J({ error: 'unknown_emp' }, 404);
-          const emp = JSON.parse(e);
-          const cs = await env.KV.get('cfg:sites');
-          const cfg = cs ? JSON.parse(cs) : { sites: [] };
-          const rec = await env.KV.get('a:' + istNow().date + ':' + emp.id);
-          return J({ name: emp.name, sites: (cfg.sites || []).map((x) => x.name), today: rec ? JSON.parse(rec) : null, date: istNow().date });
+        // 3. Mask Aadhaar before storing
+        const maskedAadhaar = maskAadhaar(a.aadhaar);
+
+        // 4. Store documents privately in employee-docs bucket
+        let photoPath = null;
+        if (a.photo && typeof a.photo === 'string' && a.photo.startsWith('data:')) {
+          photoPath = `applications/${a.id}/photo.jpg`;
+          await uploadStorageObject(env, 'employee-docs', photoPath, 'image/jpeg', a.photo);
+        }
+        const docsObj = {};
+        if (a.doc && typeof a.doc === 'string' && a.doc.startsWith('data:')) {
+          const isPdf = a.doc.startsWith('data:application/pdf');
+          const docPath = `applications/${a.id}/aadhaar.${isPdf ? 'pdf' : 'jpg'}`;
+          await uploadStorageObject(env, 'employee-docs', docPath, isPdf ? 'application/pdf' : 'image/jpeg', a.doc);
+          docsObj.aadhaar = docPath;
+        }
+        if (a.panDoc && typeof a.panDoc === 'string' && a.panDoc.startsWith('data:')) {
+          const isPdf = a.panDoc.startsWith('data:application/pdf');
+          const panPath = `applications/${a.id}/pan.${isPdf ? 'pdf' : 'jpg'}`;
+          await uploadStorageObject(env, 'employee-docs', panPath, isPdf ? 'application/pdf' : 'image/jpeg', a.panDoc);
+          docsObj.pan = panPath;
+        }
+        if (a.licenseDoc && typeof a.licenseDoc === 'string' && a.licenseDoc.startsWith('data:')) {
+          const isPdf = a.licenseDoc.startsWith('data:application/pdf');
+          const licPath = `applications/${a.id}/license.${isPdf ? 'pdf' : 'jpg'}`;
+          await uploadStorageObject(env, 'employee-docs', licPath, isPdf ? 'application/pdf' : 'image/jpeg', a.licenseDoc);
+          docsObj.license = licPath;
         }
 
-        if (p === '/api/att' && m === 'POST') {
-          if (!checkContentLength(req, SIZE_LIMITS.ATTENDANCE)) return J({ error: 'too_big' }, 413);
-          const tx = await req.text();
-          if (tx.length > SIZE_LIMITS.ATTENDANCE) return J({ error: 'too_big' }, 413);
-          let b;
-          try { b = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
-          if (!b || !/^[a-z0-9]{16,40}$/.test(String(b.tok || '')) || (b.kind !== 'in' && b.kind !== 'out')) return J({ error: 'bad' }, 400);
-          const e = await env.KV.get('emp:' + b.tok);
-          if (!e) return J({ error: 'unknown_emp' }, 404);
-          const emp = JSON.parse(e);
-          const q = String(b.code || '').split('|');
-          if (q.length !== 3 || q[0] !== 'SRATT') return J({ error: 'bad_code' }, 400);
-          const cs = await env.KV.get('cfg:sites');
-          const cfg = cs ? JSON.parse(cs) : { sites: [] };
-          const site = (cfg.sites || []).find((x) => x.id === q[1]);
-          if (!site || !same(q[2], site.code)) return J({ error: 'bad_code' }, 400);
-          let dist = null;
-          if (site.lat != null && site.lng != null) {
-            const la = Number(b.lat);
-            const ln = Number(b.lng);
-            if (!isFinite(la) || !isFinite(ln) || b.lat == null) return J({ error: 'location_required' }, 400);
-            dist = Math.round(hav(site.lat, site.lng, la, ln));
-            const acc = Math.min(Math.max(Number(b.acc) || 0, 0), 60);
-            if (dist > (Number(site.r) || 100) + acc) return J({ error: 'too_far', dist, site: site.name, r: Number(site.r) || 100 }, 403);
+        // 5. Insert application record into database
+        const appRecord = {
+          id: a.id,
+          invite_code: a.t,
+          full_name: String(a.name || '').trim(),
+          phone: String(a.mobile || '').trim(),
+          aadhaar_masked: maskedAadhaar,
+          photo_path: photoPath,
+          docs: docsObj,
+          details: {
+            department: a.department || invite.department || 'Water Plant',
+            emergency: a.emergency || '',
+            emergencyName: a.emergencyName || '',
+            address: a.address || '',
+            pan: a.pan || '',
+            licenseNo: a.licenseNo || ''
+          },
+          status: 'submitted'
+        };
+
+        const insApp = await sbRest(env, 'applications', {
+          method: 'POST',
+          headers: { prefer: 'return=minimal' },
+          body: JSON.stringify(appRecord)
+        });
+        if (!insApp.ok) return J({ error: 'save_failed' }, 502);
+
+        // 6. Mark invite as used
+        await sbRest(env, 'invites?code=eq.' + encodeURIComponent(a.t), {
+          method: 'PATCH',
+          headers: { prefer: 'return=minimal' },
+          body: JSON.stringify({ used_at: new Date().toISOString(), used_by: a.id })
+        });
+
+        return J({ ok: true });
+      }
+
+      if (p === '/api/apps' && m === 'GET') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        const appRes = await sbRest(env, 'applications?order=created_at.desc&limit=50');
+        if (!appRes.ok) return J({ error: 'db_error' }, 502);
+        const rows = await appRes.json().catch(() => []);
+        const items = [];
+        for (const r of (Array.isArray(rows) ? rows : [])) {
+          const photoSigned = r.photo_path ? await createSignedUrl(env, 'employee-docs', r.photo_path) : null;
+          const docsSigned = {};
+          if (r.docs && typeof r.docs === 'object') {
+            for (const [k, v] of Object.entries(r.docs)) {
+              docsSigned[k] = await createSignedUrl(env, 'employee-docs', v);
+            }
           }
-          const ph = String(b.photo || '');
-          if (!/^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(ph) || ph.length > 200000) return J({ error: 'bad_photo' }, 400);
-          const n = istNow();
-          const key = 'a:' + n.date + ':' + emp.id;
-          const old = await env.KV.get(key);
-          const rec = old ? JSON.parse(old) : { emp: emp.id, name: emp.name, date: n.date };
-          if (b.kind === 'in' && rec.in) return J({ ok: true, dup: true, kind: 'in', time: rec.in.t, site: rec.in.siteName });
-          const pk = 'ap:' + n.date + ':' + emp.id + ':' + b.kind + ':' + n.time.replace(/:/g, '');
-          await env.KV.put(pk, ph, { expirationTtl: 60 * 60 * 24 * 120 });
-          rec[b.kind] = { t: n.time, site: site.id, siteName: site.name, dist, ph: pk };
-          await env.KV.put(key, JSON.stringify(rec), { expirationTtl: 60 * 60 * 24 * 400 });
-          return J({ ok: true, kind: b.kind, time: n.time, site: site.name, dist });
+          items.push({
+            id: r.id,
+            srjoin: 1,
+            name: r.full_name,
+            mobile: r.phone,
+            aadhaar: r.aadhaar_masked,
+            photo: photoSigned,
+            doc: docsSigned.aadhaar || null,
+            panDoc: docsSigned.pan || null,
+            licenseDoc: docsSigned.license || null,
+            pan: (r.details && r.details.pan) || '',
+            licenseNo: (r.details && r.details.licenseNo) || '',
+            emergency: (r.details && r.details.emergency) || '',
+            emergencyName: (r.details && r.details.emergencyName) || '',
+            address: (r.details && r.details.address) || '',
+            department: (r.details && r.details.department) || 'Water Plant',
+            date: (r.created_at || '').slice(0, 10),
+            submittedAt: r.created_at,
+            status: r.status
+          });
+        }
+        return J({ items });
+      }
+
+      if (p === '/api/me' && m === 'GET') {
+        const t = u.searchParams.get('tok') || '';
+        if (!/^[a-z0-9_-]{2,40}$/i.test(t)) return J({ error: 'bad' }, 400);
+
+        // Lookup employee
+        const empRes = await sbRest(env, 'employees?id=eq.' + encodeURIComponent(t) + '&select=id,name,phone,role,active');
+        if (!empRes.ok) return J({ error: 'db_error' }, 502);
+        const emps = await empRes.json().catch(() => []);
+        if (!Array.isArray(emps) || !emps.length) return J({ error: 'unknown_emp' }, 404);
+        const emp = emps[0];
+
+        // Lookup active attendance sites
+        const sitesRes = await sbRest(env, 'attendance_sites?active=eq.true&select=id,name,code,lat,lng,radius_m');
+        const sites = sitesRes.ok ? await sitesRes.json().catch(() => []) : [];
+
+        // Lookup today's attendance record
+        const todayDate = istNow().date;
+        const attRes = await sbRest(env, 'attendance?employee_id=eq.' + encodeURIComponent(emp.id) + '&att_date=eq.' + todayDate + '&select=*');
+        const attRows = attRes.ok ? await attRes.json().catch(() => []) : [];
+        let todayRec = null;
+        if (Array.isArray(attRows) && attRows.length > 0) {
+          const ar = attRows[0];
+          todayRec = {
+            emp: emp.id,
+            name: emp.name,
+            date: ar.att_date,
+            in: ar.time_in ? { t: ar.time_in, siteName: ar.site_name || 'Plant', dist: ar.distance_m } : null,
+            out: ar.time_out ? { t: ar.time_out, siteName: ar.site_name || 'Plant', dist: ar.distance_m } : null
+          };
         }
 
-        if (p === '/api/slips' && m === 'GET') {
-          const t = u.searchParams.get('tok') || '';
-          if (!/^[a-z0-9]{16,40}$/.test(t)) return J({ error: 'bad' }, 400);
-          const v = await env.KV.get('slips:' + t);
-          return J({ items: v ? JSON.parse(v) : [] });
+        return J({
+          name: emp.name,
+          sites: (Array.isArray(sites) ? sites : []).map(s => s.name),
+          today: todayRec,
+          date: todayDate
+        });
+      }
+
+      if (p === '/api/att/setup' && m === 'POST') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        const b = await req.json().catch(() => null);
+        if (!b || !Array.isArray(b.sites)) return J({ error: 'bad' }, 400);
+
+        let siteCount = 0;
+        for (const s of b.sites) {
+          if (!s || !s.id || !s.name) continue;
+          const siteRecord = {
+            id: s.id,
+            name: s.name,
+            code: s.code || 'CODE' + s.id,
+            lat: s.lat != null ? Number(s.lat) : null,
+            lng: s.lng != null ? Number(s.lng) : null,
+            radius_m: Math.max(10, Number(s.r) || 100),
+            active: true
+          };
+          await sbRest(env, 'attendance_sites', {
+            method: 'POST',
+            headers: { prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(siteRecord)
+          });
+          siteCount++;
+        }
+        return J({ ok: true, sites: siteCount, emps: Array.isArray(b.emps) ? b.emps.length : 0 });
+      }
+
+      if (p === '/api/att' && m === 'POST') {
+        if (!checkContentLength(req, SIZE_LIMITS.ATTENDANCE)) return J({ error: 'too_big' }, 413);
+        const tx = await req.text();
+        if (tx.length > SIZE_LIMITS.ATTENDANCE) return J({ error: 'too_big' }, 413);
+        let b;
+        try { b = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
+        if (!b || !/^[a-z0-9_-]{2,40}$/i.test(String(b.tok || '')) || (b.kind !== 'in' && b.kind !== 'out')) {
+          return J({ error: 'bad' }, 400);
         }
 
-        if (p === '/api/slip' && m === 'POST') {
-          if (!admin) return J({ error: 'unauthorized' }, 401);
-          if (!checkContentLength(req, SIZE_LIMITS.SLIP)) return J({ error: 'too_big' }, 413);
-          const tx = await req.text();
-          if (tx.length > SIZE_LIMITS.SLIP) return J({ error: 'too_big' }, 413);
-          const b = JSON.parse(tx);
-          if (!/^[a-z0-9]{16,40}$/.test(String(b.tok || '')) || !b.item || !/^[A-Za-z0-9_-]{4,40}$/.test(String(b.item.id || ''))) return J({ error: 'bad' }, 400);
-          const old = await env.KV.get('slips:' + b.tok);
-          let a = old ? JSON.parse(old) : [];
-          a = a.filter((x) => x.id !== b.item.id);
-          a.push(b.item);
-          a = a.slice(-48);
-          await env.KV.put('slips:' + b.tok, JSON.stringify(a));
-          return J({ ok: true });
+        // 1. Verify employee
+        const empRes = await sbRest(env, 'employees?id=eq.' + encodeURIComponent(b.tok) + '&select=id,name,phone,active');
+        if (!empRes.ok) return J({ error: 'db_error' }, 502);
+        const emps = await empRes.json().catch(() => []);
+        if (!Array.isArray(emps) || !emps.length) return J({ error: 'unknown_emp' }, 404);
+        const emp = emps[0];
+
+        // 2. Validate QR Code
+        const q = String(b.code || '').split('|');
+        if (q.length !== 3 || q[0] !== 'SRATT') return J({ error: 'bad_code' }, 400);
+
+        // 3. Validate Site
+        const siteRes = await sbRest(env, 'attendance_sites?id=eq.' + encodeURIComponent(q[1]) + '&select=*');
+        const sites = siteRes.ok ? await siteRes.json().catch(() => []) : [];
+        if (!Array.isArray(sites) || !sites.length) return J({ error: 'bad_code' }, 400);
+        const site = sites[0];
+        if (!same(q[2], site.code)) return J({ error: 'bad_code' }, 400);
+
+        // 4. Geofence Check
+        let dist = null;
+        if (site.lat != null && site.lng != null) {
+          const la = Number(b.lat);
+          const ln = Number(b.lng);
+          if (!isFinite(la) || !isFinite(ln) || b.lat == null) return J({ error: 'location_required' }, 400);
+          dist = Math.round(hav(site.lat, site.lng, la, ln));
+          const acc = Math.min(Math.max(Number(b.acc) || 0, 0), 60);
+          const maxAllowed = (Number(site.radius_m) || 100) + acc;
+          if (dist > maxAllowed) {
+            return J({ error: 'too_far', dist, site: site.name, r: Number(site.radius_m) || 100 }, 403);
+          }
         }
+
+        // 5. Validate and Upload Photo to Private Storage
+        const ph = String(b.photo || '');
+        if (!/^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(ph) || ph.length > 200000) return J({ error: 'bad_photo' }, 400);
+
+        const now = istNow();
+        const photoFileName = `attendance/${now.date}/${emp.id}_${b.kind}_${now.time.replace(/:/g, '')}.jpg`;
+        await uploadStorageObject(env, 'employee-docs', photoFileName, 'image/jpeg', ph);
+
+        // 6. Check existing attendance record for today
+        const curAttRes = await sbRest(env, 'attendance?employee_id=eq.' + encodeURIComponent(emp.id) + '&att_date=eq.' + now.date + '&select=*');
+        const curRows = curAttRes.ok ? await curAttRes.json().catch(() => []) : [];
+        const existing = Array.isArray(curRows) && curRows.length > 0 ? curRows[0] : null;
+
+        if (b.kind === 'in' && existing && existing.time_in) {
+          return J({ ok: true, dup: true, kind: 'in', time: existing.time_in, site: existing.site_name || site.name });
+        }
+
+        if (existing) {
+          const updatePayload = {
+            status: 'Present',
+            site_id: site.id,
+            site_name: site.name,
+            distance_m: dist,
+            lat: b.lat != null ? Number(b.lat) : null,
+            lng: b.lng != null ? Number(b.lng) : null,
+            accuracy_m: b.acc != null ? Number(b.acc) : null
+          };
+          if (b.kind === 'in') {
+            updatePayload.time_in = now.time;
+            updatePayload.photo_in_path = photoFileName;
+          } else {
+            updatePayload.time_out = now.time;
+            updatePayload.photo_out_path = photoFileName;
+          }
+          await sbRest(env, 'attendance?id=eq.' + encodeURIComponent(existing.id), {
+            method: 'PATCH',
+            headers: { prefer: 'return=minimal' },
+            body: JSON.stringify(updatePayload)
+          });
+        } else {
+          const newAtt = {
+            id: 'ATT-' + now.date.replace(/-/g, '') + '-' + emp.id,
+            att_date: now.date,
+            employee_id: emp.id,
+            status: 'Present',
+            time_in: b.kind === 'in' ? now.time : null,
+            time_out: b.kind === 'out' ? now.time : null,
+            photo_in_path: b.kind === 'in' ? photoFileName : null,
+            photo_out_path: b.kind === 'out' ? photoFileName : null,
+            site_id: site.id,
+            site_name: site.name,
+            distance_m: dist,
+            lat: b.lat != null ? Number(b.lat) : null,
+            lng: b.lng != null ? Number(b.lng) : null,
+            accuracy_m: b.acc != null ? Number(b.acc) : null,
+            source: 'banner'
+          };
+          await sbRest(env, 'attendance', {
+            method: 'POST',
+            headers: { prefer: 'return=minimal' },
+            body: JSON.stringify(newAtt)
+          });
+        }
+
+        return J({ ok: true, kind: b.kind, time: now.time, site: site.name, dist });
+      }
+
+      if (p === '/api/atts' && m === 'GET') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        const d = u.searchParams.get('date') || istNow().date;
+        const r = await sbRest(env, 'attendance?att_date=eq.' + encodeURIComponent(d) + '&select=*,employees(name)');
+        if (!r.ok) return J({ error: 'db_error' }, 502);
+        const rows = await r.json().catch(() => []);
+        const items = (Array.isArray(rows) ? rows : []).map(ar => ({
+          emp: ar.employee_id,
+          name: ar.employees ? ar.employees.name : ar.employee_id,
+          date: ar.att_date,
+          in: ar.time_in ? { t: ar.time_in, siteName: ar.site_name || 'Plant', dist: ar.distance_m, ph: ar.photo_in_path } : null,
+          out: ar.time_out ? { t: ar.time_out, siteName: ar.site_name || 'Plant', dist: ar.distance_m, ph: ar.photo_out_path } : null
+        }));
+        return J({ items });
+      }
+
+      if (p === '/api/att/photo' && m === 'GET') {
+        const caller = await verifyAuth(req, env);
+        if (!caller) return J({ error: 'unauthorized' }, 401);
+        const k = u.searchParams.get('k') || '';
+        if (!k) return J({ error: 'bad' }, 400);
+
+        if (caller.profile.role === 'employee') {
+          const empId = caller.profile.employee_id;
+          if (!k.includes(empId)) return J({ error: 'forbidden' }, 403);
+        }
+
+        const signedUrl = await createSignedUrl(env, 'employee-docs', k, 3600);
+        if (!signedUrl) return J({ error: 'not_found' }, 404);
+        return J({ ok: true, url: signedUrl, p: signedUrl });
+      }
+
+      if (p === '/api/slips' && m === 'GET') {
+        const t = u.searchParams.get('tok') || '';
+        if (!/^[a-z0-9_-]{2,40}$/i.test(t)) return J({ error: 'bad' }, 400);
+        const empRes = await sbRest(env, 'employees?id=eq.' + encodeURIComponent(t) + '&select=id,name');
+        if (!empRes.ok) return J({ error: 'db_error' }, 502);
+        const emps = await empRes.json().catch(() => []);
+        if (!Array.isArray(emps) || !emps.length) return J({ error: 'unknown_emp' }, 404);
+        const emp = emps[0];
+
+        const slipRes = await sbRest(env, 'payslips?employee_id=eq.' + encodeURIComponent(emp.id) + '&order=month_year.desc');
+        const rows = slipRes.ok ? await slipRes.json().catch(() => []) : [];
+        const items = [];
+        for (const s of (Array.isArray(rows) ? rows : [])) {
+          const signedPdf = s.pdf_path ? await createSignedUrl(env, 'employee-docs', s.pdf_path) : null;
+          items.push({
+            id: s.id,
+            month_year: s.month_year,
+            gross: s.gross_pay,
+            deductions: s.deductions,
+            net: s.net_pay,
+            pdf: signedPdf,
+            details: s.details
+          });
+        }
+        return J({ items });
+      }
+
+      if (p === '/api/slip' && m === 'POST') {
+        const caller = await verifyAuth(req, env);
+        if (!caller || !['owner', 'manager', 'admin'].includes(caller.profile.role)) {
+          return J({ error: 'unauthorized' }, 401);
+        }
+        if (!checkContentLength(req, SIZE_LIMITS.SLIP)) return J({ error: 'too_big' }, 413);
+        const tx = await req.text();
+        if (tx.length > SIZE_LIMITS.SLIP) return J({ error: 'too_big' }, 413);
+        let b;
+        try { b = JSON.parse(tx); } catch (e) { return J({ error: 'bad' }, 400); }
+        if (!b || !b.tok || !b.item || !b.item.id) return J({ error: 'bad' }, 400);
+
+        const empRes = await sbRest(env, 'employees?id=eq.' + encodeURIComponent(b.tok) + '&select=id');
+        const emps = empRes.ok ? await empRes.json().catch(() => []) : [];
+        if (!Array.isArray(emps) || !emps.length) return J({ error: 'unknown_emp' }, 404);
+        const emp = emps[0];
+
+        let pdfPath = null;
+        if (b.item.pdf && typeof b.item.pdf === 'string' && b.item.pdf.startsWith('data:')) {
+          pdfPath = `payslips/${emp.id}/${b.item.id}.pdf`;
+          await uploadStorageObject(env, 'employee-docs', pdfPath, 'application/pdf', b.item.pdf);
+        }
+
+        const slipRecord = {
+          id: b.item.id,
+          employee_id: emp.id,
+          month_year: b.item.month || b.item.month_year || istNow().date.slice(0, 7),
+          gross_pay: Number(b.item.gross || b.item.salary) || 0,
+          deductions: Number(b.item.deductions) || 0,
+          net_pay: Number(b.item.net || b.item.salary) || 0,
+          details: b.item,
+          pdf_path: pdfPath,
+          created_by: caller.user.id
+        };
+
+        const upRes = await sbRest(env, 'payslips', {
+          method: 'POST',
+          headers: { prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify(slipRecord)
+        });
+        if (!upRes.ok) return J({ error: 'save_failed' }, 502);
+        return J({ ok: true });
       }
     } catch (e) {
       console.error('Worker error:', e);

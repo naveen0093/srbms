@@ -39,3 +39,6 @@
 
 -- File 7: RPC Security Hardening & Business Rules (Auth Before Idempotency, Scoped Keys, IST Dates, GST Flag, Payment Capping)
 \ir migrations/20261127000007_rpc_hardening.sql
+
+-- File 8: Attendance, Applications, Invites, Payslips & HR (Private Storage & Aadhaar Masking)
+\ir migrations/20261127000008_attendance_and_hr.sql

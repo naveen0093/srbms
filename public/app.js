@@ -191,27 +191,15 @@ function queueOfflineDelivery(tripId, data) {
   return provId;
 }
 
-function seed(){
- var d=today(), D=function(n){var x=new Date();x.setDate(x.getDate()-n);return ymd(x)};
- var c=['Ramesh Enterprises','Sri Lakshmi Hotel','Venkat Traders','Anand Sweets','Green Valley School','City Hospital','Balaji Tiffins','Sai Residency'];
- var s={customers:[],bills:[],payments:[],stock:[],expenses:[],employees:[],attendance:[],advances:[],
-  settings:{name:'Larven Enterprises',owner:'Muni prasad',phone:'',gst:'37BDGPS8418C2ZC',gv:1,address:'',products:defProducts(),pv:3,low:100}};
- c.forEach(function(n,i){s.customers.push({id:'C'+(i+1),name:n,phone:'98480'+(10000+i*137),area:['Main Road','Bus Stand','Market','Temple St','Colony','Hospital Rd','Station Rd','Park Layout'][i],date:D(60-i*5)})});
- var cat=defProducts(),n=1000;
- for(var k=13;k>=0;k--){for(var j=0;j<3;j++){var pr=cat[(k+j)%cat.length],p=pr.n,q=pr.c*(3+((k*7+j*5)%9)),amt=(q/pr.c)*pr.r,cu=s.customers[(k+j*3)%8],paid=(k+j)%4==0?Math.round(amt*.4):amt;
-  s.bills.push({id:'B'+(++n),date:D(k),cust:cu.id,items:[{p:p,q:q,r:pr.r,cs:pr.c}],total:amt,paid:paid,mode:['Cash','PhonePe','Cash'][j%3]});}}
- s.bills.forEach(function(b){if(b.paid>0)s.payments.push({id:'P'+b.id,date:b.date,cust:b.cust,amount:b.paid,mode:b.mode,bill:b.id})});
- [['In','20 Ltr Empty Bottles',200,'Purchase'],['In','5 Ltr Empty Bottles',150,'Purchase'],['In','Jar Caps',500,'Purchase'],['In','Sealing Caps',300,'Purchase'],['In','10 Ltr Empty Bottles',120,'Purchase'],
-  ['Out','20 Ltr Empty Bottles',150,'Delivery'],['Out','5 Ltr Empty Bottles',30,'Delivery'],['Out','Jar Caps',300,'Used'],['Out','Sealing Caps',225,'Used'],['Out','10 Ltr Empty Bottles',60,'Delivery']].forEach(function(r,i){s.stock.push({id:'S'+(i+1),date:D(5-i%5),type:r[0],item:r[1],qty:r[2],note:r[3]})});
- [['Diesel','AP 39 AB 1234',1500,0],['Diesel','AP 39 CD 5678',1200,1],['Electricity','Plant motor',3200,2],['Repairs','Pump service',850,3],['Diesel','AP 39 EF 9012',1400,4]].forEach(function(r,i){s.expenses.push({id:'E'+(i+1),date:D(r[3]),cat:r[0],note:r[1],amount:r[2]})});
- ['Suresh (Driver)','Mahesh (Helper)','Lakshmi (Operator)','Ravi (Driver)'].forEach(function(n,i){s.employees.push({id:'M'+(i+1),name:n,role:['Driver','Helper','Operator','Driver'][i],phone:'99890'+(20000+i*211),salary:[15000,10000,12000,15000][i]})});
- s.employees.forEach(function(e,i){s.attendance.push({id:'A'+(i+1),date:d,emp:e.id,status:i==3?'Absent':'Present',tin:'08:0'+i,tout:i==3?'':'18:0'+i})});
- s.advances.push({id:'V1',date:D(6),emp:'M2',amount:2000,note:'Festival advance'});
- return s;
+function bmsDef(){
+ return {
+  customers:[],bills:[],payments:[],stock:[],expenses:[],employees:[],attendance:[],advances:[],
+  settings:{name:'Larven Enterprises',owner:'Muni prasad',phone:'',gst:'37BDGPS8418C2ZC',gv:1,address:'',products:defProducts(),pv:3,low:100}
+ };
 }
 var S;
 try{S=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){S=null}
-if(!S||!S.bills)S=seed();
+if(!S||!S.bills)S=bmsDef();
 initCafeStorage();
 if(S.settings&&/aquaflow/i.test(S.settings.name))S.settings.name='Larven Enterprises';
  if(!Array.isArray(S.cafeSales))S.cafeSales=[];if(!Array.isArray(S.cafePurchases))S.cafePurchases=[];if(!Array.isArray(S.cafeStockMoves))S.cafeStockMoves=[];if(!Array.isArray(S.cafeExpenses))S.cafeExpenses=[];if(!Array.isArray(S.cafeEmployees))S.cafeEmployees=[];
@@ -269,7 +257,7 @@ if(S.settings&&S.settings.fgUnit!='cases'){S.fg.forEach(function(r){var pc=fgPer
      ];
    }
  })();
- if(!Array.isArray(S.cancelledBills))S.cancelledBills=[];if(!Array.isArray(S.deletedBills))S.deletedBills=[];if(!S.billDeletePin)S.billDeletePin=null;
+ if(!Array.isArray(S.cancelledBills))S.cancelledBills=[];if(!Array.isArray(S.deletedBills))S.deletedBills=[];
 if(S.settings&&S.settings.pv!==2){var oldp=S.settings.products||[],np=defProducts();np.forEach(function(p){var m=oldp.filter(function(o){return o.n==p.n})[0];if(m&&m.r)p.r=m.r});S.settings.products=np;S.settings.pv=2}
 if(S.settings&&S.settings.address==null)S.settings.address='';
 if(S.settings&&S.settings.upiId==null)S.settings.upiId='';if(S.settings&&S.settings.upiPayee==null)S.settings.upiPayee=S.settings.name||'Larven Enterprises';
@@ -298,7 +286,7 @@ function save(){
   }catch(e){toast('Could not save: browser storage is full')}}
 function nid(p,a){return p+(a.length?Math.max.apply(null,a.map(function(x){return parseInt(String(x.id).replace(/\D/g,''))||0}))+1:1)}
 function custName(id){var c=S.customers.filter(function(x){return x.id==id})[0];return c?c.name:'Walk-in'}
-function empName(id){var c=S.employees.filter(function(x){return x.id==id})[0];return c?c.name:'-'}
+function empName(id){var c=(S.employees||[]).filter(function(x){return x.id==id})[0];if(c)return c.name;if(typeof CURRENT_PROFILE!=='undefined'&&CURRENT_PROFILE&&(CURRENT_PROFILE.employee_id===id||CURRENT_PROFILE.id===id))return CURRENT_PROFILE.full_name;return '-'}
 function cafeActorName(){var el=document.querySelector('.user b');return (el&&el.textContent.trim())||(S.settings&&S.settings.owner)||'Unknown User'}
 function cafeItemNames(){var a=['Tea','Coffee','Milk','Boost','Horlicks','Lemon Tea','Irani Tea','Honey Tea','Ginger Tea','Green Tea','Badam Milk','Hot Milk','Cold Coffee','Other'];(S.cafePurchases||[]).forEach(function(x){if(x.item&&a.indexOf(x.item)<0)a.push(x.item)});(S.cafeStockMoves||[]).forEach(function(x){if(x.item&&a.indexOf(x.item)<0)a.push(x.item)});return a}
 
@@ -367,14 +355,14 @@ function dashboard(){
  var ts=sum(dayBills(t),function(b){return b.total}),ys=sum(dayBills(y),function(b){return b.total});
  var tc=sum(dayBills(t),function(b){return b.paid}),yc=sum(dayBills(y),function(b){return b.paid});
  var out=outstanding(),yo=out-sum(dayBills(t),function(b){return b.total-b.paid});
- var mon=t.slice(0,7),newC=S.customers.filter(function(c){return c.date.slice(0,7)==mon}).length;
+ var mon=t.slice(0,7),newC=S.customers.filter(function(c){return (c.date||'').slice(0,7)==mon}).length;
  var days=[],lab=[];for(var i=6;i>=0;i--){var d=dayOff(i);days.push(d);lab.push(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(d+'T00:00').getDay()])}
  var sales=days.map(function(d){return sum(dayBills(d),function(b){return b.total})}),col=days.map(function(d){return sum(dayBills(d),function(b){return b.paid})});
  var mx=Math.max.apply(null,sales.concat(col).concat([1])),top=Math.ceil(mx/5000)*5000||5000,ch='';
  for(var g=0;g<=4;g++){var yy=20+g*40;ch+='<line x1="52" x2="560" y1="'+yy+'" y2="'+yy+'" stroke="var(--line)"/><text x="44" y="'+(yy+4)+'" font-size="11" fill="var(--muted)" text-anchor="end">'+(g==4?'0':'₹'+((top/4*(4-g))/1000)+'K')+'</text>'}
  days.forEach(function(d,i){var x=70+i*70,h1=sales[i]/top*160,h2=col[i]/top*160;
   ch+='<rect x="'+x+'" y="'+(180-h1)+'" width="22" height="'+h1+'" rx="3" fill="#c2502a"><title>'+lab[i]+' sales '+inr(sales[i])+'</title></rect><rect x="'+(x+26)+'" y="'+(180-h2)+'" width="22" height="'+h2+'" rx="3" fill="#18a957"><title>'+lab[i]+' collections '+inr(col[i])+'</title></rect><text x="'+(x+24)+'" y="200" font-size="11" fill="var(--muted)" text-anchor="middle">'+lab[i]+'</text>'});
- var pc={};S.bills.filter(function(b){return b.date.slice(0,7)==mon}).forEach(function(b){b.items.forEach(function(it){pc[it.p]=(pc[it.p]||0)+it.q})});
+ var pc={};S.bills.filter(function(b){return (b.date||'').slice(0,7)==mon}).forEach(function(b){b.items.forEach(function(it){pc[it.p]=(pc[it.p]||0)+it.q})});
  var pn=Object.keys(pc).filter(function(k){return Number.isFinite(pc[k])&&pc[k]>0}),tot=sum(pn,function(k){return pc[k]})||1,cols=['#c2502a','#e4b768','#14b8c4','#f59e0b'],C=2*Math.PI*60,off=0,dn='';
  pn.forEach(function(k,i){var L=pc[k]/tot*C;dn+='<circle cx="85" cy="85" r="60" fill="none" stroke="'+cols[i%4]+'" stroke-width="22" stroke-dasharray="'+L+' '+(C-L)+'" stroke-dashoffset="'+(-off)+'" transform="rotate(-90 85 85)"/>';off+=L});
  var dl=pn.map(function(k,i){return '<div><i style="background:'+cols[i%4]+'"></i><span>'+esc(k)+' Bottles</span><b>'+Math.round(pc[k]).toLocaleString('en-IN')+' ('+Math.round(pc[k]/tot*100)+'%)</b></div>'}).join('');
@@ -539,8 +527,7 @@ var PAGES={
  'rep-exp':function(){var m={};S.expenses.forEach(function(e){m[e.cat]=(m[e.cat]||0)+e.amount});var t=sum(S.expenses,function(e){return e.amount}),inc=sum(S.bills,function(b){return b.paid});return head('Expense Reports')+kp([['Total expenses',inr(t)],['Collections',inr(inc)],['Net',inr(inc-t)]])+table(['Category','Amount','Share'],Object.keys(m).map(function(k){return [esc(k),inr(m[k]),Math.round(m[k]/t*100)+'%']}))},
  settings:function(){FORMS.sf=function(v){var s=S.settings;s.name=v.name;s.owner=v.owner;s.phone=v.phone;s.gst=v.gst;s.address=v.address;s.upiId=(v.upiId||'').trim();s.upiPayee=(v.upiPayee||v.name||'Larven Enterprises').trim();s.low=+v.low;s.products.forEach(function(p,i){p.r=+v['pr'+i]||0});return 'Settings saved'};var s=S.settings;
   var pf=[];s.products.forEach(function(p,i){pf.push({k:'pr'+i,l:p.n+' Case of '+p.c+' - price per case (\u20B9)',t:'number',v:p.r})});
-  return head('Business Settings')+formCard([{k:'name',l:'Business name',v:s.name},{k:'owner',l:'Owner name',v:s.owner},{k:'phone',l:'Phone',v:s.phone,r:false},{k:'gst',l:'GST number',v:s.gst,r:false},{k:'address',l:'Business address (shown on bill)',v:s.address,r:false},{k:'upiPayee',l:'UPI Payee Name',v:s.upiPayee||s.name,r:false},{k:'upiId',l:'PhonePe / UPI ID (e.g. business@upi)',v:s.upiId||'',r:false},{k:'low',l:'Low stock level',t:'number',v:s.low}].concat(pf),'Save Settings','sf')+'<div class="note">PhonePe QR uses this UPI ID and the amount entered on the New Bill page. Payment is not automatically verified.</div>'+billSettingsCard()+
-   '<div class="card" style="margin-top:16px"><h3>Bill deletion authorization</h3><p class="pdesc">Set an Owner authorization password. Employees must enter this password and a deletion reason before a bill can be moved to Deleted Bills.</p><form id="billpinform" class="form" autocomplete="off"><div class="fld"><label for="billpin1">New authorization password (minimum 8 characters)</label><input id="billpin1" type="password" minlength="8" required autocomplete="new-password"></div><div class="fld"><label for="billpin2">Confirm password</label><input id="billpin2" type="password" minlength="8" required autocomplete="new-password"></div><div class="fld"><button class="btn" type="submit">Save authorization password</button></div></form><p class="note warn">Prototype limitation: this password is stored in this browser. It is not secure server-side authorization. Enable Supabase authentication and backend authorization before production use.</p><div class="note">'+(S.billDeletePin?'Authorization password is configured.':'No authorization password configured yet.')+'</div></div><div style="margin-top:16px"><button class="btn danger" id="reset">Reset to sample data</button></div>'}
+  return head('Business Settings')+formCard([{k:'name',l:'Business name',v:s.name},{k:'owner',l:'Owner name',v:s.owner},{k:'phone',l:'Phone',v:s.phone,r:false},{k:'gst',l:'GST number',v:s.gst,r:false},{k:'address',l:'Business address (shown on bill)',v:s.address,r:false},{k:'upiPayee',l:'UPI Payee Name',v:s.upiPayee||s.name,r:false},{k:'upiId',l:'PhonePe / UPI ID (e.g. business@upi)',v:s.upiId||'',r:false},{k:'low',l:'Low stock level',t:'number',v:s.low}].concat(pf),'Save Settings','sf')+'<div class="note">PhonePe QR uses this UPI ID and the amount entered on the New Bill page. Payment is not automatically verified.</div>'+billSettingsCard()}
 };
 function stockPage(type,title,note){var f='sf'+type;FORMS[f]=function(v){S.stock.push({id:nid('S',S.stock),date:v.date,type:type,item:v.item,qty:+v.qty,note:v.note||note});return 'Stock '+type.toLowerCase()+' saved'};
  return head(title)+formCard([{k:'item',l:'Item',t:'select',o:ITEMS},{k:'qty',l:'Quantity',t:'number'},{k:'note',l:'Note',r:false,v:note},{k:'date',l:'Date',t:'date'}],'Save','FORM-'+f)+table(['Date','Item','Qty','Note',''],S.stock.filter(function(r){return r.type==type}).slice().reverse().map(function(r){return [r.date,esc(r.item),r.qty,esc(r.note),del('stock',r.id)]}))}
@@ -1262,26 +1249,17 @@ function billDispositionModal(action,id){
  '<form id="billDispositionForm" data-action="'+action+'" data-id="'+esc(id)+'" class="form" style="grid-template-columns:1fr">'+
  '<div class="fld"><label for="bill-action-by">Employee name</label><input id="bill-action-by" name="actionBy" required maxlength="80" placeholder="Enter employee name"></div>'+
  '<div class="fld"><label for="bill-action-reason">'+(isDel?'Deletion reason':'Cancellation reason')+'</label><textarea class="bill-reason" id="bill-action-reason" name="actionReason" required minlength="5" maxlength="500" placeholder="Explain why this bill is '+(isDel?'being deleted':'being cancelled')+'"></textarea></div>'+
- (isDel?'<div class="fld"><label for="bill-action-pin">Owner authorization password</label><input id="bill-action-pin" name="pin" type="password" required autocomplete="current-password" placeholder="Enter Owner password"></div>':'')+
- '<div class="note warn">'+(isDel?'Deletion requires the Owner authorization password.':'Cancellation keeps the original bill in the Cancelled Bills archive.')+'</div><div class="dact"><button type="button" class="btn alt" data-nb="close">Go back</button><button type="submit" class="btn '+(isDel?'danger':'')+'">'+(isDel?'Authorize & Delete':'Confirm Cancellation')+'</button></div></form>';
+ '<div class="note warn">'+(isDel?'Moving this bill to Deleted Bills archive.':'Cancellation keeps the original bill in the Cancelled Bills archive.')+'</div><div class="dact"><button type="button" class="btn alt" data-nb="close">Go back</button><button type="submit" class="btn '+(isDel?'danger':'')+'">'+(isDel?'Confirm Deletion':'Confirm Cancellation')+'</button></div></form>';
  openModal(html);
 }
-function digestSecret(secret,salt){return crypto.subtle.digest('SHA-256',new TextEncoder().encode(salt+'|'+secret)).then(function(buf){return Array.from(new Uint8Array(buf)).map(function(x){return x.toString(16).padStart(2,'0')}).join('')})}
-function saveBillPin(pin){var salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(function(x){return x.toString(16).padStart(2,'0')}).join('');return digestSecret(pin,salt).then(function(hash){S.billDeletePin={salt:salt,hash:hash,updatedAt:new Date().toISOString()};save()})}
-function verifyBillPin(pin){if(!S.billDeletePin||!S.billDeletePin.salt||!S.billDeletePin.hash)return Promise.resolve(false);return digestSecret(pin,S.billDeletePin.salt).then(function(hash){return hash===S.billDeletePin.hash})}
 function archiveBill(action,id,data){var b=S.bills.filter(function(x){return x.id==id})[0];if(!b)return false;
  var archived=Object.assign({},b,{archiveType:action,actionReason:data.actionReason.trim(),actionBy:data.actionBy.trim(),actionDate:new Date().toLocaleString('en-IN'),actionAt:new Date().toISOString()});
  if(action=='cancel')S.cancelledBills.push(archived);else S.deletedBills.push(archived);
  S.bills=S.bills.filter(function(x){return x.id!=id});save();closeModal();render();toast('Bill #'+id+(action=='cancel'?' cancelled':' moved to Deleted Bills')+'. Reason saved.');return true}
 document.addEventListener('submit',function(e){var f=e.target;
- if(f.id=='billpinform'){e.preventDefault();var a=$('#billpin1').value,b=$('#billpin2').value;if(a.length<8){toast('Use at least 8 characters');return}if(a!==b){toast('Passwords do not match');return}
-  if(!window.crypto||!crypto.subtle){toast('Secure password setup requires HTTPS');return}
-  saveBillPin(a).then(function(){render();toast('Bill deletion authorization password saved')}).catch(function(){toast('Could not save authorization password')});return}
- if(f.id=='billDispositionForm'){e.preventDefault();var d={actionBy:f.elements.actionBy.value,actionReason:f.elements.actionReason.value,pin:f.elements.pin?f.elements.pin.value:''};
+ if(f.id=='billDispositionForm'){e.preventDefault();var d={actionBy:f.elements.actionBy.value,actionReason:f.elements.actionReason.value};
   if(d.actionBy.trim().length<2||d.actionReason.trim().length<5){toast('Enter employee name and a clear reason');return}
-  if(f.dataset.action=='delete'){if(!window.crypto||!crypto.subtle){toast('Secure password check requires HTTPS');return}
-   verifyBillPin(d.pin).then(function(ok){if(!ok){toast('Incorrect Owner authorization password');return}archiveBill('delete',f.dataset.id,d)}).catch(function(){toast('Could not verify password')})}
-  else archiveBill('cancel',f.dataset.id,d);return}
+  archiveBill(f.dataset.action=='delete'?'delete':'cancel',f.dataset.id,d);return}
 });
 document.addEventListener('click',function(e){var t=e.target.closest('[data-billact]');if(t)billDispositionModal(t.dataset.billact,t.dataset.id)});
 /* ----- Deleting with a clear warning, cascade and Undo ----- */
@@ -1318,19 +1296,35 @@ function copyTxtFb(v){var x=document.createElement('textarea');x.value=v;x.style
 /* ---------- owner: invite + approvals ---------- */
 function mkInviteLink(inv){return location.href.split('#')[0]+'#join='+b64e({t:inv.t,b:S.settings.name,p:digits(S.settings.phone),department:inv.department||'Water Plant'})}
 function waInvite(){var l=INVLINK;if(!l)return '#';var m='Hello! Please fill your joining details for '+S.settings.name+' using this link:\n'+l.url+'\n\n'+S.settings.name+' లో చేరడానికి ఈ లింక్ ఓపెన్ చేసి మీ వివరాలు నింపండి.';return 'https://wa.me/'+(l.to?'91'+l.to:'')+'?text='+encodeURIComponent(m)}
-var AKEY='sr-admin-v1',SYNC={busy:false,state:''};
-function akey(){try{return localStorage.getItem(AKEY)||''}catch(e){return ''}}
-function online(){return location.protocol!='file:'}
-function api(path,opt){opt=opt||{};opt.headers=Object.assign({'x-admin-key':akey()},opt.headers||{});return fetch(path,opt)}
-function syncApps(manual){if(!online()||!akey()||SYNC.busy)return Promise.resolve();SYNC.busy=true;var ok=0,names=[];
+var SYNC={busy:false,state:''};
+function online(){return typeof navigator !== 'undefined' ? navigator.onLine !== false && location.protocol != 'file:' : location.protocol != 'file:'}
+function api(path,opt){
+ opt=opt||{};
+ var sess=getSession();
+ var token=sess&&sess.session&&sess.session.access_token;
+ var headers=Object.assign({'content-type':'application/json'},opt.headers||{});
+ if(token)headers['authorization']='Bearer '+token;
+ opt.headers=headers;
+ return fetch(path,opt);
+}
+function syncApps(manual){
+ if(!online()||SYNC.busy)return Promise.resolve();
+ var sess=getSession();
+ if(!sess||!sess.session)return Promise.resolve();
+ SYNC.busy=true;var ok=0,names=[];
  return api('/api/apps').then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){
-  return (d.ids||[]).reduce(function(p,id){return p.then(function(){return api('/api/app?id='+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null}).then(function(o){if(!o)return;var r=addApplication(o);if(r=='ok'){ok++;names.push(o.name)}if(r=='ok'||r=='dup'||r=='bad')return api('/api/app/delete',{method:'POST',body:JSON.stringify({id:id})})})})},Promise.resolve())}).then(function(){SYNC.state='ok';
-  if(ok){save();toast(ok==1?'New joining application: '+names[0]:ok+' new joining applications');var f=document.activeElement;if((PAGE_IS('employees')||PAGE_IS('cafe-employees'))&&!(f&&/INPUT|SELECT|TEXTAREA/.test(f.tagName)))render()}else if(manual)toast('No new applications')
- }).catch(function(e){SYNC.state=syncErr(e);if(manual)toast(SYNCMSG[SYNC.state])}).then(function(){SYNC.busy=false;if((PAGE_IS('employees')||PAGE_IS('cafe-employees'))&&(manual||SYNC.state!='ok')){var el=$('#sync-st');if(el)el.outerHTML=syncStatus()}})}
+  (d.items||[]).forEach(function(o){var r=addApplication(o);if(r=='ok'){ok++;names.push(o.name)}});
+  SYNC.state='ok';
+  if(ok){save();toast(ok==1?'New joining application: '+names[0]:ok+' new joining applications');var f=document.activeElement;if((PAGE_IS('employees')||PAGE_IS('cafe-employees'))&&!(f&&/INPUT|SELECT|TEXTAREA/.test(f.tagName)))render()}else if(manual)toast('No new applications');
+ }).catch(function(e){SYNC.state='err';if(manual)toast('Could not sync applications')}).then(function(){SYNC.busy=false;if((PAGE_IS('employees')||PAGE_IS('cafe-employees'))&&(manual||SYNC.state!='ok')){var el=$('#sync-st');if(el)el.outerHTML=syncStatus()}});
+}
 function PAGE_IS(id){return (location.hash||'#dashboard').replace('#','').split('?')[0]==id}
-var SYNCMSG={badkey:'Wrong key. Type the ADMIN_KEY password again and press Save key.',nocfg:'Server is running, but KV or ADMIN_KEY is not set for Production. Set them in Cloudflare, then deploy again.',noworker:'Server code (_worker.js) is not running on this site. Upload the folder that has _worker.js again.',err:'No internet connection to the site.'};
-function syncErr(e){return e==401?'badkey':e==503?'nocfg':(typeof e=='number'||(e&&e.name=='SyntaxError'))?'noworker':'err'}
-function syncStatus(){var h='';if(!online())h='Not available when opened as a file';else if(!akey())h='Not connected';else if(SYNC.state=='ok')h='Connected · new applications appear here automatically';else h=SYNCMSG[SYNC.state]||'Checking…';return '<span id="sync-st" class="muted">'+h+'</span>'}
+function syncStatus(){
+ if(!online())return '<span id="sync-st" class="muted">Not available offline</span>';
+ var sess=getSession();
+ if(!sess||!sess.session)return '<span id="sync-st" class="muted">Sign in with owner/manager account to sync</span>';
+ return '<span id="sync-st" class="muted" style="color:var(--green)">Connected to Supabase · new applications sync automatically</span>';
+}
 setInterval(function(){if(!document.hidden&&!JOIN.t)syncApps(false)},25000);
 var ROLES=['Driver','Helper','Operator','System Operator','Sweeper','Security Guard','Accountant','Salesman','Other'];
 function appCard(a){var roleOptions=a.department=='Cafe'?['Cafe Manager','Cashier','Barista','Cook','Service Staff','Cleaner','Other']:ROLES;return '<div class="apc"><img class="eph big" src="'+a.photo+'" alt="Photo of '+esc(a.name)+'"><div class="ainfo"><b>'+esc(a.name)+'</b><span>'+esc(a.mobile)+' · Aadhaar '+maskA(a.aadhaar)+'</span><span>Emergency contact: '+esc(a.emergency?a.emergency+(a.emergencyName?' ('+a.emergencyName+')':''):'Not provided')+'</span><span>'+esc(a.address)+'</span><span>Applied '+fdate(a.date)+'</span><div class="rowact"><button type="button" class="btn sm alt" data-ej="doc" data-id="'+a.id+'">Aadhaar</button>'+(a.panDoc?'<button type="button" class="btn sm alt" data-ej="appdoc" data-id="'+a.id+'" data-type="pan">PAN</button>':'')+(a.licenseDoc?'<button type="button" class="btn sm alt" data-ej="appdoc" data-id="'+a.id+'" data-type="license">Licence</button>':'')+'</div></div>'+
@@ -1341,7 +1335,7 @@ PAGES.employees=function(){setTimeout(function(){syncApps(false)},50);
  var inv='<div class="card inv"><h3>Invite a new employee</h3><p class="pdesc">Send a joining link on WhatsApp. The employee fills personal details, Aadhaar and PAN details, uploads Aadhaar/PAN/Driving Licence documents, takes a live photo, and submits. You review and approve the application.</p>'+
   (location.protocol=='file:'?'<div class="note warn">This link will open on the employee\'s phone only after the app is hosted online (Cloudflare Pages). A link made from a file on this computer cannot be opened on another phone.</div>':'')+
   '<div class="invrow"><div class="fld"><label for="inv-me">Your WhatsApp number</label><input id="inv-me" type="tel" inputmode="numeric" maxlength="10" value="'+esc(digits(S.settings.phone))+'" placeholder="10-digit mobile"></div><div class="fld"><label for="inv-to">Employee mobile (optional, opens their chat)</label><input id="inv-to" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile"></div><div class="fld"><button type="button" class="btn" data-ej="newinv" style="width:100%;height:42px">Create joining link</button></div></div>'+
-  '<div class="linkbox" style="margin-top:10px"><span class="muted">Online connection:</span> '+syncStatus()+(online()?' <input id="ak-in" type="password" placeholder="Online key" aria-label="Online key" autocomplete="off" style="flex:0 1 180px"><button type="button" class="btn alt sm" data-ej="savekey">'+(akey()?'Change key':'Save key')+'</button>':'')+'</div>'+
+  '<div class="linkbox" style="margin-top:10px"><span class="muted">Online connection:</span> '+syncStatus()+'</div>'+
   (INVLINK?'<div class="linkbox"><input id="inv-link" readonly value="'+esc(INVLINK.url)+'" aria-label="Joining link"><button type="button" class="btn alt" data-ej="copyinv">Copy link</button><a class="btn wa" target="_blank" rel="noopener" href="'+waInvite()+'">Send on WhatsApp</a></div>':'')+'</div>';
  var ap='<div class="card"><div class="aphead"><h3>Joining applications<span class="cnt">'+pend.length+' pending</span></h3><div><button type="button" class="btn sm" data-ej="refresh">Refresh</button> <button type="button" class="btn alt sm" data-ej="import">Import file</button><input type="file" id="ej-file" accept=".txt,.json,text/plain,application/json" hidden multiple></div></div>'+
   (pend.length?pend.map(appCard).join(''):'<p class="pdesc" style="margin:10px 0 0">No pending applications. When an employee submits the joining form, it appears here automatically.</p>')+'</div>';
@@ -1390,16 +1384,15 @@ function addApplication(o){
  var dt=/^\d{4}-\d{2}-\d{2}$/.test(o.date||'')?o.date:today();
  S.applications.push({id:id,t:String(o.t||''),department:String(o.department||'Water Plant'),date:dt,submittedAt:String(o.submittedAt||new Date().toISOString()),name:nm,mobile:mb,emergency:emg,emergencyName:emn,address:ad,aadhaar:aa,photo:ph,doc:dc,docType:/^data:application\/pdf/.test(dc)?'pdf':'image',pan:pan,panDoc:pd,panDocType:/^data:application\/pdf/.test(pd)?'pdf':'image',licenseNo:ln,licenseDoc:ld,licenseDocType:/^data:application\/pdf/.test(ld)?'pdf':'image',status:'Pending'});
  S.invites.forEach(function(v){if(o.t&&v.t==o.t)v.status='used'});return 'ok'}
-document.addEventListener('click',function(e){var t=e.target.closest('[data-cej]');if(!t)return;var a=t.dataset.cej;if(a=='copy'){var box=t.parentNode.querySelector('input');if(box)copyTxt(box.value);return}if(a=='newinv'){var me=digits($('#cafe-inv-me').value),to=digits($('#cafe-inv-to').value);if(me.length!=10)return bad('#cafe-inv-me','Enter 10-digit WhatsApp number');if(to&&to.length!=10)return bad('#cafe-inv-to','Employee mobile must be 10 digits');if(!online())return toast('Open the hosted Cloudflare URL to create an employee joining link');if(!akey())return toast('Save the online key in Employee Management first');var inv={id:nid('I',S.invites),t:newTok(),date:today(),status:'open',department:'Cafe'};S.settings.phone=me;api('/api/invite',{method:'POST',body:JSON.stringify({t:inv.t})}).then(function(r){if(!r.ok)throw r.status;S.invites.push(inv);save();CAFEINV={url:location.href.split('#')[0]+'#join='+b64e({t:inv.t,b:S.settings.name,p:digits(S.settings.phone),department:'Cafe'}),to:to};render()}).catch(function(){toast('Could not create Cafe joining link. Check the online key and Cloudflare Worker.')})}});
+document.addEventListener('click',function(e){var t=e.target.closest('[data-cej]');if(!t)return;var a=t.dataset.cej;if(a=='copy'){var box=t.parentNode.querySelector('input');if(box)copyTxt(box.value);return}if(a=='newinv'){var me=digits($('#cafe-inv-me').value),to=digits($('#cafe-inv-to').value);if(me.length!=10)return bad('#cafe-inv-me','Enter 10-digit WhatsApp number');if(to&&to.length!=10)return bad('#cafe-inv-to','Employee mobile must be 10 digits');if(!online())return toast('Open the hosted Cloudflare URL to create an employee joining link');var inv={id:nid('I',S.invites),t:newTok(),date:today(),status:'open',department:'Cafe'};S.settings.phone=me;api('/api/invite',{method:'POST',body:JSON.stringify({t:inv.t,department:'Cafe',to:to})}).then(function(r){if(!r.ok)throw r.status;S.invites.push(inv);save();CAFEINV={url:location.href.split('#')[0]+'#join='+b64e({t:inv.t,b:S.settings.name,p:digits(S.settings.phone),department:'Cafe'}),to:to};render()}).catch(function(){toast('Could not create Cafe joining link. Sign in with owner/manager account.')})}});
 document.addEventListener('click',function(e){var t=e.target.closest('[data-ej]');if(!t)return;var a=t.dataset.ej,id=t.dataset.id;
  if(a=='newinv'){var me=digits($('#inv-me').value),to=digits($('#inv-to').value);clearErr('#inv-me');clearErr('#inv-to');
   if(me.length!=10)return bad('#inv-me','Enter your 10-digit WhatsApp number');if(to&&to.length!=10)return bad('#inv-to','Employee mobile must be 10 digits');
   S.settings.phone=me;var inv={id:nid('I',S.invites),t:newTok(),date:today(),status:'open'};
   var fin=function(){S.invites.push(inv);save();INVLINK={url:mkInviteLink(inv),to:to};render()};
-  if(!online())return fin();if(!akey())return toast('Save the online key first (see "Online connection")');
-  api('/api/invite',{method:'POST',body:JSON.stringify({t:inv.t})}).then(function(r){if(r.ok)fin();else toast(r.status==401?'Wrong online key':r.status==503?'Online service is not set up yet':'Could not create the link')},function(){toast('Could not reach the online service')})}
- else if(a=='savekey'){var k=$('#ak-in').value.trim();if(!k)return toast('Enter the online key');try{localStorage.setItem(AKEY,k)}catch(x){}SYNC.state='';api('/api/ping').then(function(r){if(r.ok){SYNC.state='ok';toast('Connected');syncApps(true)}else{SYNC.state=syncErr(r.status);toast(SYNCMSG[SYNC.state])}render()},function(){SYNC.state='err';toast(SYNCMSG.err);render()})}
- else if(a=='refresh'){if(!akey())return toast('Save the online key first');syncApps(true)}
+  if(!online())return fin();
+  api('/api/invite',{method:'POST',body:JSON.stringify({t:inv.t,department:'Water Plant',to:to})}).then(function(r){if(r.ok)fin();else toast(r.status==401?'Sign in with owner or manager account':r.status==503?'Online service is not set up yet':'Could not create the link')},function(){toast('Could not reach the online service')})}
+ else if(a=='refresh'){syncApps(true)}
  else if(a=='copyinv'){copyTxt($('#inv-link').value)}
  else if(a=='import'){$('#ej-file').click()}
  else if(a=='doc')showDoc(id);
@@ -1566,7 +1559,7 @@ function portalLink(e){return location.href.split('#')[0]+'#me='+etok(e)}
 function hrWa(e,txt){var m=digits(e.phone);return 'https://wa.me/'+(m?'91'+m:'')+'?text='+encodeURIComponent(txt)}
 function slipWa(e,s){return hrWa(e,'*'+s.b.n+'*\nHello '+e.name+', your pay slip for '+ymLabel(s.m)+' is ready.\nNet pay: '+money(s.net)+'\n\nView / download: '+docLink(s)+'\n\nAll your pay slips: '+portalLink(e))}
 function letterWa(e,L){return hrWa(e,'*'+L.b.n+'*\nDear '+e.name+', welcome to '+L.b.n+'! Your joining letter is ready.\n\nView / download: '+docLink(L)+'\n\nYour pay slips will appear here: '+portalLink(e))}
-function pubItem(e,o){if(!online()||!akey())return toast('Saved. Save the online key (Employee Management) to publish to the employee portal.');
+function pubItem(e,o){if(!online())return toast('Saved.');
  api('/api/slip',{method:'POST',body:JSON.stringify({tok:etok(e),item:o})}).then(function(r){toast(r.ok?'Published to the employee portal':'Could not publish to the employee portal')},function(){toast('Could not reach the online service')})}
 function hrCard(e){var ym=today().slice(0,7),mine=pss().filter(function(x){return x.e.id==e.id}).sort(function(a,b){return a.m<b.m?1:-1});
  return '<section class="card" style="margin-top:14px"><h3>HR Documents</h3><p class="pdesc">Joining letter and monthly pay slips are made from this employee\'s saved details. Share on WhatsApp or download as PDF.</p><div class="pf" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:14px">'+
@@ -1612,16 +1605,16 @@ function attLate(t){return !!t&&attMin(t)>attMin(S.settings.attStart||'09:00')+a
 function fmt12(t){var x=String(t||'').split(':'),h=+x[0]||0,m=x[1]||'00';return (h%12||12)+':'+m+' '+(h>=12?'PM':'AM')}
 function attDay(n){var d=new Date();d.setDate(d.getDate()-n);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function loadScript(src){return new Promise(function(ok,no){var s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=no;document.head.appendChild(s)})}
-function attSync(manual){if(!online()||!akey()){if(manual)toast(online()?'Save your admin key first (Employee Management page)':'Open the deployed website, not the file');return Promise.resolve(false)}
+function attSync(manual){if(!online()){if(manual)toast('Open the deployed website, not the file');return Promise.resolve(false)}
  var body={sites:attSites().map(function(x){return {id:x.id,name:x.name,code:x.code,lat:x.lat,lng:x.lng,r:x.r}}),emps:S.employees.map(function(e){return {tok:etok(e),id:e.id,name:e.name}})};
- return api('/api/att/setup',{method:'POST',body:JSON.stringify(body)}).then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){S.settings.attSyncAt=new Date().toISOString();save();if(manual)toast('Synced: '+d.sites+' banner(s), '+d.emps+' employee link(s)');if(PAGE_IS('att-setup'))render();return true}).catch(function(e){if(manual)toast(SYNCMSG[syncErr(e)]||'Could not sync');return false})}
+ return api('/api/att/setup',{method:'POST',body:JSON.stringify(body)}).then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){S.settings.attSyncAt=new Date().toISOString();save();if(manual)toast('Synced: '+d.sites+' banner(s), '+d.emps+' employee link(s)');if(PAGE_IS('att-setup'))render();return true}).catch(function(e){if(manual)toast('Could not sync with database');return false})}
 function attMerge(rec){if(!rec||!S.employees.some(function(e){return e.id==rec.emp}))return false;var row=S.attendance.filter(function(a){return a.date==rec.date&&a.emp==rec.emp})[0],ch=false,tin=rec.in?rec.in.t.slice(0,5):'',tout=rec.out?rec.out.t.slice(0,5):'';
  if(!row){row={id:nid('A',S.attendance),date:rec.date,emp:rec.emp,status:'Present',tin:tin,tout:tout};S.attendance.push(row);ch=true}
  if(rec.in&&row.phIn!=rec.in.ph){row.src='banner';row.tin=tin;row.phIn=rec.in.ph;row.site=rec.in.siteName;row.dist=rec.in.dist;row.late=attLate(tin);if(row.status=='Absent')row.status='Present';ch=true}
  if(rec.out&&row.phOut!=rec.out.ph){row.tout=tout;row.phOut=rec.out.ph;ch=true}
  return ch}
-function attPull(manual){if(!online()||!akey()||ATT.pulling)return Promise.resolve();ATT.pulling=true;var ch=false;
- return [0,1,2].reduce(function(p,n){return p.then(function(){return api('/api/atts?date='+attDay(n)).then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){(d.items||[]).forEach(function(x){if(attMerge(x))ch=true})})})},Promise.resolve()).then(function(){if(ch){save();var f=document.activeElement;if((PAGE_IS('attendance')||PAGE_IS('timings'))&&!(f&&/INPUT|SELECT|TEXTAREA/.test(f.tagName)))render();if(manual)toast('Attendance updated from photo check-ins')}else if(manual)toast('No new check-ins')}).catch(function(e){if(manual)toast(SYNCMSG[syncErr(e)]||'Could not reach the server')}).then(function(){ATT.pulling=false})}
+function attPull(manual){if(!online()||ATT.pulling)return Promise.resolve();ATT.pulling=true;var ch=false;
+ return [0,1,2].reduce(function(p,n){return p.then(function(){return api('/api/atts?date='+attDay(n)).then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){(d.items||[]).forEach(function(x){if(attMerge(x))ch=true})})})},Promise.resolve()).then(function(){if(ch){save();var f=document.activeElement;if((PAGE_IS('attendance')||PAGE_IS('timings'))&&!(f&&/INPUT|SELECT|TEXTAREA/.test(f.tagName)))render();if(manual)toast('Attendance updated from photo check-ins')}else if(manual)toast('No new check-ins')}).catch(function(e){if(manual)toast('Could not reach the server')}).then(function(){ATT.pulling=false})}
 setTimeout(function(){attPull()},2500);setInterval(function(){if(PAGE_IS('attendance')||PAGE_IS('timings')||PAGE_IS('dashboard'))attPull()},45000);
 
 PAGES.attendance=function(){
@@ -1991,7 +1984,6 @@ document.addEventListener('click',function(e){
  else if(t.id=='scrim')closeMenu();
  else if(t.id=='addline')addLine();
  else if(t.id=='theme'){var d=document.documentElement,dark=d.dataset.theme=='dark'||(!d.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches);d.dataset.theme=dark?'light':'dark'}
- else if(t.id=='reset'){S=seed();save();toast('Sample data restored');render()}
  else if(t.matches('.nav a'))closeMenu();
 });
 document.addEventListener('input',function(e){
@@ -2355,28 +2347,28 @@ function priceVarianceReport() {
 PAGES['price-variance'] = priceVarianceReport;
 
 /* ---------- Authentication, Inactivity & User Management ---------- */
-var SESSION_KEY = 'srbms_auth_session';
+var CURRENT_SESSION = null;
 var INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 var inactivityTimer = null;
 
 function getSession() {
-  try {
-    var raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch(e) { return null; }
+  return CURRENT_SESSION;
 }
 
 function setSession(sess) {
+  CURRENT_SESSION = sess;
   try {
-    if (sess) {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(sess));
-      if (sess.user) {
-        setCurrentRole(sess.user.role || 'employee');
-        setCurrentProfile(sess.user);
-        updateUserBadge(sess.user);
+    if (typeof OutboxDB !== 'undefined' && OutboxDB.setSession) {
+      OutboxDB.setSession(sess);
+    }
+    if (sess && sess.user) {
+      setCurrentRole(sess.user.role || 'employee');
+      setCurrentProfile(sess.user);
+      updateUserBadge(sess.user);
+    } else if (!sess) {
+      if (typeof OutboxDB !== 'undefined' && OutboxDB.clearSession) {
+        OutboxDB.clearSession();
       }
-    } else {
-      localStorage.removeItem(SESSION_KEY);
       setCurrentRole('owner');
     }
   } catch(e) {}
@@ -3180,14 +3172,15 @@ function executeGpsCapture(custId) {
 
 /* ---------- (8B) IndexedDB Online-First Outbox, Cache & Sync ---------- */
 var DB_NAME = 'larven_outbox_v1';
-var DB_VERSION = 1;
+var DB_VERSION = 2;
 
 var OutboxDB = {
   db: null,
   state: {
     pendingItems: [],
     attentionItems: [],
-    cachedTrips: {}
+    cachedTrips: {},
+    session: null
   },
   _initPromise: null,
 
@@ -3214,6 +3207,9 @@ var OutboxDB = {
           }
           if (!db.objectStoreNames.contains('needs_attention')) {
             db.createObjectStore('needs_attention', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('session')) {
+            db.createObjectStore('session', { keyPath: 'key' });
           }
         };
         req.onsuccess = function(e) {
@@ -3265,7 +3261,9 @@ var OutboxDB = {
     }
     return new Promise(function(resolve) {
       try {
-        var tx = self.db.transaction(['outbox', 'needs_attention', 'trip_cache'], 'readonly');
+        var stores = ['outbox', 'needs_attention', 'trip_cache'];
+        if (self.db.objectStoreNames.contains('session')) stores.push('session');
+        var tx = self.db.transaction(stores, 'readonly');
         var outStore = tx.objectStore('outbox');
         var attStore = tx.objectStore('needs_attention');
         var cacheStore = tx.objectStore('trip_cache');
@@ -3286,6 +3284,17 @@ var OutboxDB = {
           (getAllCache.result || []).forEach(function(c) { m[c.trip_id] = c; });
           self.state.cachedTrips = m;
         };
+
+        if (self.db.objectStoreNames.contains('session')) {
+          var sessionStore = tx.objectStore('session');
+          var getSess = sessionStore.get('auth_session');
+          getSess.onsuccess = function() {
+            self.state.session = getSess.result ? getSess.result.value : null;
+            if (self.state.session && !CURRENT_SESSION) {
+              setSession(self.state.session);
+            }
+          };
+        }
 
         tx.oncomplete = function() { resolve(); };
         tx.onerror = function() { resolve(); };
@@ -3482,6 +3491,62 @@ var OutboxDB = {
       last_error: null
     };
     await this.enqueue(outboxItem);
+  },
+
+  setSession: async function(sess) {
+    this.state.session = sess;
+    await this.init();
+    if (!this.db || !this.db.objectStoreNames.contains('session')) return sess;
+    var self = this;
+    return new Promise(function(resolve) {
+      try {
+        var tx = self.db.transaction(['session'], 'readwrite');
+        var store = tx.objectStore('session');
+        if (sess) {
+          store.put({ key: 'auth_session', value: sess });
+        } else {
+          store.delete('auth_session');
+        }
+        tx.oncomplete = function() { resolve(sess); };
+        tx.onerror = function() { resolve(sess); };
+      } catch(e) { resolve(sess); }
+    });
+  },
+
+  getSession: async function() {
+    if (this.state.session !== undefined && this.state.session !== null) {
+      return this.state.session;
+    }
+    await this.init();
+    if (!this.db || !this.db.objectStoreNames.contains('session')) return this.state.session || null;
+    var self = this;
+    return new Promise(function(resolve) {
+      try {
+        var tx = self.db.transaction(['session'], 'readonly');
+        var req = tx.objectStore('session').get('auth_session');
+        req.onsuccess = function() {
+          var res = req.result ? req.result.value : null;
+          self.state.session = res;
+          resolve(res);
+        };
+        req.onerror = function() { resolve(null); };
+      } catch(e) { resolve(null); }
+    });
+  },
+
+  clearSession: async function() {
+    this.state.session = null;
+    await this.init();
+    if (!this.db || !this.db.objectStoreNames.contains('session')) return;
+    var self = this;
+    return new Promise(function(resolve) {
+      try {
+        var tx = self.db.transaction(['session'], 'readwrite');
+        tx.objectStore('session').delete('auth_session');
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch(e) { resolve(); }
+    });
   }
 };
 OutboxDB.init();

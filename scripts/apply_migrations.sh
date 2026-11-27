@@ -30,6 +30,7 @@ MIGRATIONS=(
   "20261127000005_user_management.sql"
   "20261127000006_storage.sql"
   "20261127000007_rpc_hardening.sql"
+  "20261127000008_attendance_and_hr.sql"
 )
 
 echo "=== Supabase Migration Chain (Dry Run Plan) ==="
