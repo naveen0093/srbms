@@ -177,6 +177,7 @@ async function verifyAuth(req, env) {
   if (!auth.toLowerCase().startsWith('bearer ')) return null;
   const token = auth.slice(7).trim();
   if (!token) return null;
+  if (!env || !env.SUPABASE_URL) return null;
 
   const r = await fetch(sbBase(env) + '/auth/v1/user', {
     headers: {
@@ -991,6 +992,53 @@ export default {
           return J(Object.assign({ ok: true }, sbData), 200);
         }
         return J({ ok: true, data: sbData }, 200);
+      }
+
+      // -------------------------------------------------------------
+      // 8C. SUPABASE REST READ PROXY (/api/rest/:table)
+      // Enforces caller authentication and forwards requests to Supabase
+      // PostgREST with the caller's JWT token for RLS policy enforcement.
+      // -------------------------------------------------------------
+      const restMatch = /^\/api\/rest\/([a-zA-Z0-9_]+)$/.exec(p);
+      if (restMatch && m === 'GET') {
+        const table = restMatch[1];
+
+        // 1. Caller authentication
+        const caller = await verifyAuth(req, env);
+        if (!caller) return J({ error: 'unauthorized', message: 'Authentication required' }, 401);
+
+        // 2. Ensure Supabase credentials are configured
+        if (!env.SUPABASE_URL || (!env.SUPABASE_ANON_KEY && !env.SUPABASE_SERVICE_ROLE_KEY)) {
+          return J({ error: 'bad_gateway', message: 'Database backend not configured' }, 502);
+        }
+
+        // 3. Forward request to Supabase PostgREST with caller's token
+        const authHeader = req.headers.get('authorization') || '';
+        const targetUrl = sbBase(env) + '/rest/v1/' + encodeURIComponent(table) + (u.search || '');
+
+        let sbRes;
+        try {
+          sbRes = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+              apikey: env.SUPABASE_ANON_KEY || env.SUPABASE_SERVICE_ROLE_KEY,
+              authorization: authHeader,
+              'content-type': 'application/json',
+              accept: 'application/json',
+              prefer: req.headers.get('prefer') || 'return=representation'
+            }
+          });
+        } catch (fetchErr) {
+          console.error(`Fetch exception communicating with Supabase REST (${table}):`, fetchErr);
+          return J({ error: 'bad_gateway', message: 'Failed to communicate with database' }, 502);
+        }
+
+        if (sbRes.status >= 500) {
+          return J({ error: 'bad_gateway', message: 'Database service error' }, 502);
+        }
+
+        const data = await sbRes.json().catch(() => []);
+        return J(data, sbRes.status);
       }
 
       // -------------------------------------------------------------

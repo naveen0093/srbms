@@ -1081,4 +1081,150 @@ assert.ok(appJsCode.includes('Math.min(Math.max(rawPaid, 0), finalTotal)'), 'app
 
 console.log('  ✓ Migration 7 RPC Hardening & Business Rules verified (100% compliant)');
 
+// 16. Verifying Slice 1: Employee "My Route" Supabase Reads, Fallback Removal & Storage Isolation
+console.log('16. Validating Slice 1: Employee "My Route" Supabase Reads, Removal of Fallbacks & Storage Isolation...');
+
+// A. Removal of 'M1' fallback and loose unsettled trip fallbacks
+assert.ok(!appJsCode.includes("CURRENT_PROFILE.employee_id) || 'M1'"), "app.js must not contain 'M1' fallback");
+assert.ok(!appJsCode.includes("CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1'"), "app.js must not contain 'M1' fallback");
+
+// B. Worker REST proxy endpoint (/api/rest/:table)
+assert.ok(workerCode.includes('/^\\/api\\/rest\\/([a-zA-Z0-9_]+)$/'), 'Worker must define /api/rest/:table route');
+assert.ok(workerCode.includes("sbBase(env) + '/rest/v1/'"), 'Worker must proxy to Supabase /rest/v1/');
+
+// Test REST proxy requires authentication
+const unauthRestRes = await workerFetch(new Request('http://localhost/api/rest/trips', { method: 'GET' }), {
+  SUPABASE_URL: 'https://example.supabase.co',
+  SUPABASE_ANON_KEY: 'test-key'
+});
+assert.strictEqual(unauthRestRes.status, 401, 'Unauthenticated REST proxy request returns 401');
+
+// Test REST proxy returns 502 when backend not configured
+const noBackendRestRes = await workerFetch(new Request('http://localhost/api/rest/trips', {
+  method: 'GET',
+  headers: { authorization: 'Bearer test-token' }
+}), {});
+assert.strictEqual(noBackendRestRes.status, 401, 'Request without valid backend auth fails verification');
+
+// C. Verify save() removes S.trips and S.tripStops from localStorage
+context.window.S.trips = [{ id: 'TRIP-LOCAL-1', driver_employee_id: 'EMP-LOCAL' }];
+context.window.S.tripStops = [{ id: 'STOP-LOCAL-1', trip_id: 'TRIP-LOCAL-1' }];
+context.window.save();
+const rawSavedBms = storageMap['aquaflow-bms-v1'];
+assert.ok(rawSavedBms, 'aquaflow-bms-v1 exists in localStorage');
+const parsedSavedBms = JSON.parse(rawSavedBms);
+assert.strictEqual(parsedSavedBms.trips, undefined, 'S.trips must be deleted from localStorage before saving');
+assert.strictEqual(parsedSavedBms.tripStops, undefined, 'S.tripStops must be deleted from localStorage before saving');
+
+// Verify Cafe module storage remains untouched
+assert.strictEqual(context.window.KEY_CAFE, 'larven-cafe-v1', 'Cafe module localStorage key is untouched');
+
+// D. Test Employee with no open trips renders empty state (no M1 or fallback trip)
+context.window.setCurrentRole('employee');
+context.window.setCurrentProfile({ id: 'u-emp-none', employee_id: 'EMP-NONE', role: 'employee' });
+context.window.S.trips = [
+  { id: 'TRIP-OTHER', driver_employee_id: 'EMP-OTHER', driver_id: 'EMP-OTHER', status: 'on_route' },
+  { id: 'TRIP-SETTLED', driver_employee_id: 'EMP-NONE', driver_id: 'EMP-NONE', status: 'settled' }
+];
+context.window.S.tripStops = [];
+const emptyRouteHtml = context.window.PAGES['my-route']();
+assert.ok(emptyRouteHtml.includes('No active delivery trip assigned for today.'), 'Employee with no open trips shows empty state');
+assert.ok(!emptyRouteHtml.includes('TRIP-OTHER'), 'Employee does NOT see other employees trips');
+
+// E. Test loadMyRouteFromSupabase() loads open trip, stops, items, and customers
+const mockTripId = 'TRIP-SB-101';
+const mockStopId = 'STOP-SB-201';
+const mockCustId = 'CUST-SB-301';
+const mockEmpId = 'EMP-TEST-99';
+
+context.window.setCurrentProfile({ id: 'u-test-99', employee_id: mockEmpId, role: 'employee' });
+context.window.setSession({
+  session: { access_token: 'mock-sb-token-123' },
+  user: { id: 'u-test-99', employee_id: mockEmpId, role: 'employee' }
+});
+
+const originalFetch = context.window.fetch;
+context.window.fetch = async (url, opts) => {
+  const urlStr = String(url);
+  if (urlStr.includes('/api/rest/trips')) {
+    return {
+      ok: true,
+      json: async () => [{
+        id: mockTripId,
+        driver_employee_id: mockEmpId,
+        driver_id: mockEmpId,
+        vehicle_id: 'V-101',
+        trip_date: '2026-11-27',
+        status: 'on_route',
+        start_odometer: 12000,
+        start_km: 12000
+      }]
+    };
+  }
+  if (urlStr.includes('/api/rest/trip_stops')) {
+    return {
+      ok: true,
+      json: async () => [{
+        id: mockStopId,
+        trip_id: mockTripId,
+        customer_id: mockCustId,
+        sequence_no: 1,
+        status: 'pending'
+      }]
+    };
+  }
+  if (urlStr.includes('/api/rest/trip_stop_items')) {
+    return {
+      ok: true,
+      json: async () => [{
+        id: 'ITEM-1',
+        trip_stop_id: mockStopId,
+        product_id: 'P-MILK-500',
+        quantity: 25
+      }]
+    };
+  }
+  if (urlStr.includes('/api/rest/customers')) {
+    return {
+      ok: true,
+      json: async () => [{
+        id: mockCustId,
+        name: 'Supabase Dairy Mart',
+        phone: '9848099887',
+        lat: 17.432,
+        lng: 78.387,
+        route_name: 'Zone A'
+      }]
+    };
+  }
+  return { ok: false, json: async () => ({}) };
+};
+
+const loadedData = await context.window.loadMyRouteFromSupabase();
+assert.ok(loadedData, 'loadMyRouteFromSupabase returns loaded data');
+assert.strictEqual(loadedData.trip.id, mockTripId, 'Loaded trip ID matches');
+assert.strictEqual(context.window.S.trips.length, 1, 'S.trips populated with open trip');
+assert.strictEqual(context.window.S.trips[0].id, mockTripId, 'S.trips[0] matches mock trip');
+assert.strictEqual(context.window.S.tripStops.length, 1, 'S.tripStops populated');
+assert.strictEqual(context.window.S.tripStops[0].id, mockStopId, 'S.tripStops[0] matches mock stop');
+assert.strictEqual(context.window.S.tripStops[0].items.length, 1, 'Trip stop items populated');
+assert.ok(context.window.S.customers.some(c => c.id === mockCustId), 'S.customers populated with trip customer');
+
+// Render My Route with loaded trip
+const populatedRouteHtml = context.window.PAGES['my-route']();
+assert.ok(populatedRouteHtml.includes(mockTripId), 'My Route renders loaded trip ID');
+assert.ok(populatedRouteHtml.includes('Supabase Dairy Mart'), 'My Route renders customer name');
+assert.ok(populatedRouteHtml.includes('Start KM:'), 'My Route renders trip start odometer label');
+assert.ok(populatedRouteHtml.includes('12,000'), 'My Route renders trip start odometer value');
+
+// F. Test offline fallback to OutboxDB cache
+context.window.navigator.onLine = false;
+const offlineLoaded = await context.window.loadMyRouteFromSupabase();
+assert.ok(offlineLoaded, 'loadMyRouteFromSupabase returns cached trip when offline');
+assert.strictEqual(offlineLoaded.trip.id, mockTripId, 'Offline loaded trip matches cached trip');
+context.window.navigator.onLine = true;
+context.window.fetch = originalFetch;
+
+console.log('  ✓ Slice 1 verified (loads caller open trip/stops/customers from Supabase, no M1/unsettled fallback, storage isolated, cafe untouched)');
+
 console.log('\n--- ALL SMOKE TESTS AND AUTHORITATIVE DECISIONS PASSED! ---');

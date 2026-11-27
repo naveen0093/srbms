@@ -292,6 +292,8 @@ function save(){
     delete bmsData.cafeStockMoves;
     delete bmsData.cafeExpenses;
     delete bmsData.cafeEmployees;
+    delete bmsData.trips;
+    delete bmsData.tripStops;
     localStorage.setItem(KEY, JSON.stringify(bmsData));
   }catch(e){toast('Could not save: browser storage is full')}}
 function nid(p,a){return p+(a.length?Math.max.apply(null,a.map(function(x){return parseInt(String(x.id).replace(/\D/g,''))||0}))+1:1)}
@@ -1936,6 +1938,20 @@ function render(){
    id = 'my-route';
    location.hash = '#my-route';
  }
+ if (id === 'my-route' && CURRENT_ROLE === 'employee' && !window.__LOADING_ROUTE && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+   window.__LOADING_ROUTE = true;
+   loadMyRouteFromSupabase().then(function(res) {
+     window.__LOADING_ROUTE = false;
+     if (res && (location.hash || '').slice(1) === 'my-route') {
+       var v = $('#view');
+       if (v && typeof PAGES['my-route'] === 'function') {
+         v.innerHTML = PAGES['my-route']();
+       }
+     }
+   }).catch(function() {
+     window.__LOADING_ROUTE = false;
+   });
+ }
  if(!PAGES[id])id='dashboard';if(id!='new-bill')EDITID=null;if(id!='customers')CV=null;
  if(id=='backup')BACKUP_MODE='daily';buildNav(id);buildTabs(id);closeMenu();document.body.classList.remove('searching');var pt=$('#ptitle');if(pt)pt.textContent=TITLES[id]||'';view.innerHTML=PAGES[id]();view.scrollTop=0;
  if(id=='new-bill')billInit();
@@ -2483,6 +2499,9 @@ async function submitLogin(phone, password, turnstileToken) {
     setSession(data);
     resetInactivityTimer();
     toast('Welcome back, ' + (data.user && data.user.full_name ? data.user.full_name : 'User'));
+    if (data.user && data.user.role === 'employee') {
+      try { await loadMyRouteFromSupabase(); } catch(e) {}
+    }
     if (data.must_change_password) {
       showForcedPasswordChangeModal();
     } else {
@@ -3533,6 +3552,9 @@ function cacheTripAtStart(trip) {
     products: JSON.parse(JSON.stringify(prods))
   };
 
+  if (OutboxDB && OutboxDB.state && OutboxDB.state.cachedTrips) {
+    OutboxDB.state.cachedTrips[cacheData.trip_id] = cacheData;
+  }
   OutboxDB.cacheTrip(cacheData);
   return cacheData;
 }
@@ -3728,15 +3750,208 @@ if (typeof window !== 'undefined' && window.addEventListener) {
   });
 }
 
+/* ---------- Supabase REST Read Helper & Employee Route Loader (Slice 1) ---------- */
+async function sbGet(table, query) {
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return null;
+  var url = '/api/rest/' + encodeURIComponent(table) + (query ? (query.startsWith('?') ? query : '?' + query) : '');
+  try {
+    var res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer ' + token
+      }
+    });
+    if (!res.ok) return null;
+    return await res.json().catch(function() { return null; });
+  } catch(e) {
+    return null;
+  }
+}
+
+async function loadMyRouteFromSupabase() {
+  if (CURRENT_ROLE !== 'employee') return null;
+  var myEmpId = CURRENT_PROFILE && CURRENT_PROFILE.employee_id;
+  if (!myEmpId) return null;
+
+  var sess = getSession();
+  var token = sess && sess.session && sess.session.access_token;
+  if (!token) return null;
+
+  // If offline, attempt loading cached trip from OutboxDB
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    if (typeof OutboxDB !== 'undefined') {
+      if (typeof OutboxDB.init === 'function') await OutboxDB.init();
+      if (OutboxDB.state && OutboxDB.state.cachedTrips) {
+        var cachedKeys = Object.keys(OutboxDB.state.cachedTrips);
+        for (var i = 0; i < cachedKeys.length; i++) {
+          var cData = OutboxDB.state.cachedTrips[cachedKeys[i]];
+          if (cData && cData.trip && (cData.trip.driver_employee_id === myEmpId || cData.trip.driver_id === myEmpId)) {
+            if (!S.trips || !S.trips.length) S.trips = [cData.trip];
+            if (!S.tripStops || !S.tripStops.length) S.tripStops = cData.stops || [];
+            return cData;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  try {
+    // 1. Fetch caller's open trip from Supabase (RLS-scoped: driver_id = current_employee_id())
+    // Status in planned, loading, on_route (not completed, settled, or cancelled)
+    var trips = await sbGet('trips', 'status=in.(planned,loading,on_route)&order=trip_date.desc,created_at.desc&limit=1');
+    if (!Array.isArray(trips) || !trips.length) {
+      if (CURRENT_ROLE === 'employee') {
+        S.trips = [];
+        S.tripStops = [];
+      } else {
+        S.trips = (S.trips || []).filter(function(t) {
+          return t.driver_employee_id !== myEmpId && t.driver_id !== myEmpId;
+        });
+      }
+      return null;
+    }
+
+    var rawTrip = trips[0];
+    var tripId = rawTrip.id;
+
+    // 2. Fetch trip stops for this trip (RLS-scoped: customer on caller's trip)
+    var rawStops = await sbGet('trip_stops', 'trip_id=eq.' + encodeURIComponent(tripId) + '&order=sequence_no.asc');
+    if (!Array.isArray(rawStops)) rawStops = [];
+
+    // 3. Fetch stop items for these stops (RLS-scoped)
+    var stopIds = rawStops.map(function(s) { return s.id; }).filter(Boolean);
+    var rawItems = [];
+    if (stopIds.length > 0) {
+      rawItems = await sbGet('trip_stop_items', 'trip_stop_id=in.(' + stopIds.map(encodeURIComponent).join(',') + ')');
+      if (!Array.isArray(rawItems)) rawItems = [];
+    }
+
+    // 4. Fetch customers on this open trip (RLS-scoped via is_customer_on_my_open_trip)
+    var rawCusts = await sbGet('customers', 'select=*');
+    if (!Array.isArray(rawCusts)) rawCusts = [];
+
+    var itemsByStop = {};
+    rawItems.forEach(function(it) {
+      if (!itemsByStop[it.trip_stop_id]) itemsByStop[it.trip_stop_id] = [];
+      itemsByStop[it.trip_stop_id].push({
+        id: it.id,
+        product_name: it.product_name,
+        cases: +it.planned_cases || 0,
+        bottles: +it.planned_bottles || 0,
+        rate: +it.rate_per_case || 0,
+        case_size: +it.case_size || 1,
+        delivered_cases: +it.delivered_cases || 0,
+        delivered_bottles: +it.delivered_bottles || 0
+      });
+    });
+
+    var loadTotals = {};
+    rawItems.forEach(function(it) {
+      var pn = it.product_name;
+      if (!loadTotals[pn]) loadTotals[pn] = { product_name: pn, cases: 0, bottles: 0 };
+      loadTotals[pn].cases += (+it.planned_cases || 0);
+      loadTotals[pn].bottles += (+it.planned_bottles || 0);
+    });
+
+    var tripObj = {
+      id: rawTrip.id,
+      trip_no: rawTrip.id,
+      vehicle_id: rawTrip.vehicle_id,
+      driver_id: rawTrip.driver_id,
+      driver_employee_id: rawTrip.driver_id,
+      trip_date: rawTrip.trip_date,
+      status: rawTrip.status,
+      start_odometer: rawTrip.start_odometer != null ? rawTrip.start_odometer : rawTrip.start_km,
+      end_odometer: rawTrip.end_odometer != null ? rawTrip.end_odometer : rawTrip.end_km,
+      loaded_at: rawTrip.loaded_at,
+      closed_at: rawTrip.closed_at,
+      notes: rawTrip.notes,
+      load_items: Object.values(loadTotals)
+    };
+
+    var stopObjs = rawStops.map(function(s) {
+      return {
+        id: s.id,
+        trip_id: s.trip_id,
+        stop_sequence: s.sequence_no,
+        customer_id: s.customer_id,
+        order_id: s.order_id,
+        planned_cases: +s.planned_cases || 0,
+        status: s.result || 'pending',
+        arrived_at: s.arrival_time,
+        arrival_lat: s.arrival_lat,
+        arrival_lng: s.arrival_lng,
+        distance_meters: s.distance_m,
+        completed_at: s.delivered_at,
+        skip_reason: s.skip_reason,
+        items: itemsByStop[s.id] || []
+      };
+    });
+
+    // Update in-memory collections
+    if (CURRENT_ROLE === 'employee') {
+      S.trips = [tripObj];
+      S.tripStops = stopObjs;
+    } else {
+      var existingTripIdx = (S.trips || []).findIndex(function(t) { return t.id === tripObj.id; });
+      if (existingTripIdx >= 0) {
+        S.trips[existingTripIdx] = tripObj;
+      } else {
+        S.trips.unshift(tripObj);
+      }
+      S.tripStops = (S.tripStops || []).filter(function(s) { return s.trip_id !== tripObj.id; }).concat(stopObjs);
+    }
+
+    // Merge RLS-scoped customers into S.customers
+    rawCusts.forEach(function(c) {
+      var exIdx = (S.customers || []).findIndex(function(x) { return x.id === c.id; });
+      var mappedCust = {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        area: c.area,
+        address: c.address,
+        lat: c.lat,
+        lng: c.lng,
+        accuracy_m: c.accuracy_m,
+        credit_limit: c.credit_limit,
+        balance: c.balance
+      };
+      if (exIdx >= 0) {
+        Object.assign(S.customers[exIdx], mappedCust);
+      } else {
+        S.customers.push(mappedCust);
+      }
+    });
+
+    // Cache trip at start for offline resilience per Decision 3
+    if (typeof cacheTripAtStart === 'function') {
+      try { await cacheTripAtStart(tripObj); } catch(e) {}
+    }
+
+    return { trip: tripObj, stops: stopObjs, customers: rawCusts };
+  } catch (err) {
+    console.warn('Could not load employee route from Supabase:', err);
+    return null;
+  }
+}
+
 /* ---------- (1) Employee "My Route" (#my-route) ---------- */
 function myRoutePage() {
-  var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1';
   var trips = (S.trips || []).slice();
   var trip = null;
   if (CURRENT_ROLE === 'employee') {
-    trip = trips.find(function(t) { return t.driver_employee_id === myEmpId && t.status !== 'settled'; }) ||
-           trips.find(function(t) { return t.status !== 'settled'; }) ||
-           trips[trips.length - 1];
+    var myEmpId = CURRENT_PROFILE && (CURRENT_PROFILE.employee_id || CURRENT_PROFILE.id);
+    if (myEmpId) {
+      trip = trips.find(function(t) {
+        return (t.driver_employee_id === myEmpId || t.driver_id === myEmpId) &&
+               t.status !== 'settled' && t.status !== 'cancelled';
+      }) || null;
+    }
   } else {
     var curTripId = window.__SELECTED_ROUTE_TRIP_ID;
     trip = (curTripId && trips.find(function(t) { return t.id === curTripId; })) ||
@@ -3744,8 +3959,35 @@ function myRoutePage() {
            trips[trips.length - 1];
   }
 
+  // Needs Attention Banner (if server rejected any offline transactions)
+  var attentionList = (OutboxDB && OutboxDB.state && OutboxDB.state.attentionItems) || [];
+  var attentionHtml = '';
+  if (attentionList.length > 0) {
+    attentionHtml = '<div class="card" style="margin-bottom:14px;padding:14px;border-left:4px solid var(--red);background:#fff5f5;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+        '<h3 style="margin:0;color:var(--red);font-size:16px;">⚠️ Needs Attention (' + attentionList.length + ' Items)</h3>' +
+      '</div>' +
+      '<p class="pdesc" style="margin:0 0 10px;color:var(--fg);font-size:13px;">The following offline transactions were rejected by the server and require attention:</p>' +
+      '<div style="display:grid;gap:8px;">' +
+      attentionList.map(function(att) {
+        var custNameStr = (att.payload && att.payload.p_customer_id) ? custName(att.payload.p_customer_id) : (att.trip_id || 'Action');
+        return '<div style="background:#fff;border:1px solid #fecaca;border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+          '<div>' +
+            '<div style="font-weight:700;font-size:14px;color:#991b1b;">' + esc(att.action) + ' · ' + esc(custNameStr) + (att.provisional_receipt ? ' (' + esc(att.provisional_receipt) + ')' : '') + '</div>' +
+            '<div style="font-size:12px;color:#b91c1c;margin-top:2px;">Reason: <b>' + esc(att.reason) + '</b></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px;">' +
+            '<button type="button" class="btn sm" data-route-act="retry-attention" data-att-id="' + esc(att.id) + '">Retry 🔄</button>' +
+            '<button type="button" class="btn alt sm" data-route-act="dismiss-attention" data-att-id="' + esc(att.id) + '">Dismiss ✕</button>' +
+          '</div>' +
+        '</div>';
+      }).join('') +
+      '</div>' +
+    '</div>';
+  }
+
   if (!trip) {
-    return head('My Delivery Route / నా రూట్') +
+    return head('My Delivery Route / నా రూట్') + attentionHtml +
       '<div class="card tw"><div class="empty">No active delivery trip assigned for today.<br><br>' +
       (CURRENT_ROLE !== 'employee' ? '<a href="#route-planner" class="btn alt sm">Go to Route Planner →</a>' : '<small class="muted">Check with manager for trip assignment.</small>') +
       '</div></div>';
@@ -3774,33 +4016,7 @@ function myRoutePage() {
       '</select></div>';
   }
 
-  var html = head('My Delivery Route / నా రూట్') + tripSelector;
-
-  // Needs Attention Banner (if server rejected any offline transactions)
-  var attentionList = (OutboxDB && OutboxDB.state && OutboxDB.state.attentionItems) || [];
-  if (attentionList.length > 0) {
-    html += '<div class="card" style="margin-bottom:14px;padding:14px;border-left:4px solid var(--red);background:#fff5f5;">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
-        '<h3 style="margin:0;color:var(--red);font-size:16px;">⚠️ Needs Attention (' + attentionList.length + ' Items)</h3>' +
-      '</div>' +
-      '<p class="pdesc" style="margin:0 0 10px;color:var(--fg);font-size:13px;">The following offline transactions were rejected by the server and require attention:</p>' +
-      '<div style="display:grid;gap:8px;">' +
-      attentionList.map(function(att) {
-        var custNameStr = (att.payload && att.payload.p_customer_id) ? custName(att.payload.p_customer_id) : (att.trip_id || 'Action');
-        return '<div style="background:#fff;border:1px solid #fecaca;border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-          '<div>' +
-            '<div style="font-weight:700;font-size:14px;color:#991b1b;">' + esc(att.action) + ' · ' + esc(custNameStr) + (att.provisional_receipt ? ' (' + esc(att.provisional_receipt) + ')' : '') + '</div>' +
-            '<div style="font-size:12px;color:#b91c1c;margin-top:2px;">Reason: <b>' + esc(att.reason) + '</b></div>' +
-          '</div>' +
-          '<div style="display:flex;gap:6px;">' +
-            '<button type="button" class="btn sm" data-route-act="retry-attention" data-att-id="' + esc(att.id) + '">Retry 🔄</button>' +
-            '<button type="button" class="btn alt sm" data-route-act="dismiss-attention" data-att-id="' + esc(att.id) + '">Dismiss ✕</button>' +
-          '</div>' +
-        '</div>';
-      }).join('') +
-      '</div>' +
-    '</div>';
-  }
+  var html = head('My Delivery Route / నా రూట్') + tripSelector + attentionHtml;
 
   // Pending Outbox Sync Banner
   var pendingList = (OutboxDB && OutboxDB.state && OutboxDB.state.pendingItems) || [];
@@ -4473,10 +4689,15 @@ function dayClosePage() {
   var trips = (S.trips || []).slice();
   var trip = null;
   if (CURRENT_ROLE === 'employee') {
-    var myEmpId = (CURRENT_PROFILE && CURRENT_PROFILE.employee_id) || 'M1';
-    trip = trips.find(function(t) { return t.driver_employee_id === myEmpId && t.status !== 'settled'; }) ||
-           trips.find(function(t) { return t.driver_employee_id === myEmpId; }) ||
-           trips[trips.length - 1];
+    var myEmpId = CURRENT_PROFILE && CURRENT_PROFILE.employee_id;
+    if (myEmpId) {
+      trip = trips.find(function(t) {
+        return (t.driver_employee_id === myEmpId || t.driver_id === myEmpId) &&
+               t.status !== 'settled' && t.status !== 'cancelled';
+      }) || trips.find(function(t) {
+        return (t.driver_employee_id === myEmpId || t.driver_id === myEmpId);
+      }) || null;
+    }
   } else {
     var curTripId = window.__SELECTED_DAYCLOSE_TRIP_ID;
     trip = (curTripId && trips.find(function(t) { return t.id === curTripId; })) ||
@@ -5370,5 +5591,10 @@ window.syncOutbox = syncOutbox;
 window.cacheTripAtStart = cacheTripAtStart;
 window.replaceProvisionalReceipt = replaceProvisionalReceipt;
 window.priceVarianceReport=priceVarianceReport;
+window.loadMyRouteFromSupabase = loadMyRouteFromSupabase;
+window.sbGet = sbGet;
+window.getSession = getSession;
+window.setSession = setSession;
+window.save = save;
 window.S=S;
 })();
