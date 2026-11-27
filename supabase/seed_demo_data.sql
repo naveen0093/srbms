@@ -2,6 +2,9 @@
 -- Larven Enterprises BMS: Demo & Sample Dataset
 -- File: supabase/seed_demo_data.sql
 --
+-- Exact column matching against 20261127000001_core_schema.sql through
+-- 20261127000008_attendance_and_hr.sql.
+--
 -- Seeds 2 users for each role type (Admin, Owner, Manager, Employee),
 -- with vehicles, master price list, customer coordinates, open trips,
 -- finished stock, attendance sites, and payslips.
@@ -18,6 +21,15 @@ BEGIN;
 -- 1. AUTH USERS (auth.users) & CREDENTIALS
 -- Passwords hashed via bcrypt: crypt('Larven@2026', gen_salt('bf'))
 -- --------------------------------------------------------------------
+-- First delete any previous test users with these phones/emails to ensure clean IDs
+DELETE FROM auth.users WHERE phone IN (
+  '+919848000001', '+919848000002',
+  '+919848000011', '+919848000012',
+  '+919848000021', '+919848000022',
+  '+919848000031', '+919848000032',
+  '+919848000033', '+919848000034'
+) OR email LIKE '%@larven.in';
+
 INSERT INTO auth.users (
   id,
   instance_id,
@@ -60,6 +72,7 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- --------------------------------------------------------------------
 -- 2. STAFF EMPLOYEES (public.employees)
+-- Columns: id, name, role, phone, salary, address, duties, active
 -- --------------------------------------------------------------------
 INSERT INTO public.employees (id, name, role, phone, salary, address, duties, active)
 VALUES
@@ -83,6 +96,7 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- --------------------------------------------------------------------
 -- 3. USER PROFILES (public.profiles)
+-- Columns: id, full_name, role, phone, employee_id, active
 -- --------------------------------------------------------------------
 INSERT INTO public.profiles (id, full_name, role, phone, employee_id, active)
 VALUES
@@ -112,26 +126,26 @@ ON CONFLICT (id) DO UPDATE SET
 
 
 -- --------------------------------------------------------------------
--- 4. LOCATIONS & VEHICLES
+-- 4. VEHICLES (public.vehicles)
+-- Columns: id, vehicle_number, vehicle_type, default_driver_id, active, notes
+-- vehicle_type check in ('Auto', 'Pickup', 'Van', 'Truck')
 -- --------------------------------------------------------------------
-INSERT INTO public.locations (id, name, type)
+INSERT INTO public.vehicles (id, vehicle_number, vehicle_type, default_driver_id, active, notes)
 VALUES
-  ('LOC-P', 'Main Water Plant', 'plant'),
-  ('LOC-G1', 'Godown 1 (SS Point 1 - Bypass)', 'godown'),
-  ('LOC-G2', 'Godown 2 (SS Point 2 - Market)', 'godown')
-ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type;
-
-INSERT INTO public.vehicles (id, registration_no, model, is_active)
-VALUES
-  ('VEH-01', 'AP 39 AB 1234', 'Tata Ace (100 Cases)', true),
-  ('VEH-02', 'AP 39 CD 5678', 'Bolero Maxi (150 Cases)', true),
-  ('VEH-03', 'AP 39 EF 9012', 'Eicher 14ft (300 Cases)', true)
-ON CONFLICT (id) DO UPDATE SET registration_no = EXCLUDED.registration_no, model = EXCLUDED.model, is_active = EXCLUDED.is_active;
+  ('VEH-01', 'AP 39 AB 1234', 'Pickup', 'EMP-001', true, 'Tata Ace (100 Cases)'),
+  ('VEH-02', 'AP 39 CD 5678', 'Pickup', 'EMP-002', true, 'Bolero Maxi (150 Cases)'),
+  ('VEH-03', 'AP 39 EF 9012', 'Truck', NULL, true, 'Eicher 14ft (300 Cases)')
+ON CONFLICT (id) DO UPDATE SET
+  vehicle_number = EXCLUDED.vehicle_number,
+  vehicle_type = EXCLUDED.vehicle_type,
+  default_driver_id = EXCLUDED.default_driver_id,
+  active = EXCLUDED.active,
+  notes = EXCLUDED.notes;
 
 
 -- --------------------------------------------------------------------
 -- 5. MASTER FINISHED GOODS PRICE LIST (public.price_list)
--- Standard unit / crate rates
+-- Columns: product, rate, effective_from
 -- --------------------------------------------------------------------
 INSERT INTO public.price_list (product, rate, effective_from)
 VALUES
@@ -146,9 +160,10 @@ ON CONFLICT DO NOTHING;
 
 -- --------------------------------------------------------------------
 -- 6. CUSTOMER DIRECTORY & GEOLOCATIONS (public.customers)
+-- Columns: id, name, phone, area, lat, lng, accuracy_m, credit_limit
 -- Coordinates around Madanapalle for realistic turn-by-turn navigation
 -- --------------------------------------------------------------------
-INSERT INTO public.customers (id, name, phone, address, lat, lng, accuracy_m, credit_limit)
+INSERT INTO public.customers (id, name, phone, area, lat, lng, accuracy_m, credit_limit)
 VALUES
   ('CUST-001', 'Sri Lakshmi Hotel & Tiffins', '9848011111', 'Main Road, Near Old Bus Stand, Madanapalle', 13.558312, 78.502145, 8.4, 8000.00),
   ('CUST-002', 'Ramesh Enterprises Mart', '9848022222', 'Market Yard Complex, Shop #14, Madanapalle', 13.561200, 78.504300, 11.2, 5000.00),
@@ -162,7 +177,7 @@ VALUES
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
   phone = EXCLUDED.phone,
-  address = EXCLUDED.address,
+  area = EXCLUDED.area,
   lat = EXCLUDED.lat,
   lng = EXCLUDED.lng,
   accuracy_m = EXCLUDED.accuracy_m,
@@ -171,35 +186,41 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- --------------------------------------------------------------------
 -- 7. FINISHED GOODS OPENING INVENTORY (public.fg_movements)
+-- Columns: id, move_date, product_name, from_location_id, to_location_id, cases, bottles, movement_type, notes, recorded_by
 -- --------------------------------------------------------------------
-INSERT INTO public.fg_movements (date, kind, size, qty, from_loc, to_loc, note, created_by)
+INSERT INTO public.fg_movements (
+  id, move_date, product_name, from_location_id, to_location_id, cases, bottles, movement_type, notes, recorded_by
+)
 VALUES
-  ((now() at time zone 'Asia/Kolkata')::date, 'Production', '20 L Can', 450, NULL, 'LOC-P', 'Morning plant production shift', 'c2000000-0000-0000-0000-000000000002'),
-  ((now() at time zone 'Asia/Kolkata')::date, 'Production', '1 L Bottle', 200, NULL, 'LOC-P', 'Morning plant bottling run', 'c2000000-0000-0000-0000-000000000002'),
-  ((now() at time zone 'Asia/Kolkata')::date, 'Production', '500 ml Bottle', 150, NULL, 'LOC-P', 'Morning plant bottling run', 'c2000000-0000-0000-0000-000000000002'),
-  ((now() at time zone 'Asia/Kolkata')::date, 'Transfer', '20 L Can', 120, 'LOC-P', 'LOC-G1', 'Transfer to Godown 1 stock', 'c1000000-0000-0000-0000-000000000001'),
-  ((now() at time zone 'Asia/Kolkata')::date, 'Transfer', '1 L Bottle', 50, 'LOC-P', 'LOC-G2', 'Transfer to Godown 2 stock', 'c1000000-0000-0000-0000-000000000001');
+  ('FGM-001', (now() at time zone 'Asia/Kolkata')::date, '20 L Can', NULL, 'PLANT', 450, 450, 'production', 'Morning plant production shift', 'c2000000-0000-0000-0000-000000000002'),
+  ('FGM-002', (now() at time zone 'Asia/Kolkata')::date, '1 L Bottle', NULL, 'PLANT', 200, 2400, 'production', 'Morning plant bottling run', 'c2000000-0000-0000-0000-000000000002'),
+  ('FGM-003', (now() at time zone 'Asia/Kolkata')::date, '500 ml Bottle', NULL, 'PLANT', 150, 3600, 'production', 'Morning plant bottling run', 'c2000000-0000-0000-0000-000000000002'),
+  ('FGM-004', (now() at time zone 'Asia/Kolkata')::date, '20 L Can', 'PLANT', 'G1', 120, 120, 'transfer', 'Transfer to Godown 1 stock', 'c1000000-0000-0000-0000-000000000001'),
+  ('FGM-005', (now() at time zone 'Asia/Kolkata')::date, '1 L Bottle', 'PLANT', 'G2', 50, 600, 'transfer', 'Transfer to Godown 2 stock', 'c1000000-0000-0000-0000-000000000001')
+ON CONFLICT (id) DO NOTHING;
 
 
 -- --------------------------------------------------------------------
 -- 8. PENDING ORDERS (public.orders & public.order_items)
+-- Columns: id, customer_id, order_date, requested_date, source, status, notes, created_by
 -- --------------------------------------------------------------------
-INSERT INTO public.orders (id, order_no, customer_id, order_date, requested_date, status, source, notes, total_amount, created_by)
+INSERT INTO public.orders (id, customer_id, order_date, requested_date, source, status, notes, created_by)
 VALUES
-  ('ORD-001', 'ORD-26-101', 'CUST-001', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'planned', 'phone', 'Daily morning kitchen refill', 600.00, 'b1000000-0000-0000-0000-000000000001'),
-  ('ORD-002', 'ORD-26-102', 'CUST-002', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'planned', 'sales_visit', 'General store weekly delivery', 1040.00, 'c1000000-0000-0000-0000-000000000001'),
-  ('ORD-003', 'ORD-26-103', 'CUST-008', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'planned', 'phone', 'Lodge dining & rooms stock', 400.00, 'b1000000-0000-0000-0000-000000000001'),
-  ('ORD-004', 'ORD-26-104', 'CUST-005', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date + 1, 'new', 'phone', 'School event drinking water order', 2000.00, 'b1000000-0000-0000-0000-000000000001')
+  ('ORD-001', 'CUST-001', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'phone', 'planned', 'Daily morning kitchen refill', 'b1000000-0000-0000-0000-000000000001'),
+  ('ORD-002', 'CUST-002', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'salesman', 'planned', 'General store weekly delivery', 'c1000000-0000-0000-0000-000000000001'),
+  ('ORD-003', 'CUST-008', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date, 'phone', 'planned', 'Lodge dining & rooms stock', 'b1000000-0000-0000-0000-000000000001'),
+  ('ORD-004', 'CUST-005', (now() at time zone 'Asia/Kolkata')::date, (now() at time zone 'Asia/Kolkata')::date + 1, 'phone', 'new', 'School event drinking water order', 'b1000000-0000-0000-0000-000000000001')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO public.order_items (id, order_id, product_name, cases, bottles, unit_rate, total_amount)
+DELETE FROM public.order_items WHERE order_id IN ('ORD-001', 'ORD-002', 'ORD-003', 'ORD-004');
+
+INSERT INTO public.order_items (order_id, product_name, cases, qty_bottles, rate_per_case, case_size)
 VALUES
-  ('ITEM-001', 'ORD-001', '20 L Can', 15, 15, 40.00, 600.00),
-  ('ITEM-002', 'ORD-002', '1 L Bottle', 5, 60, 108.00, 540.00),
-  ('ITEM-003', 'ORD-002', '500 ml Bottle', 4, 96, 125.00, 500.00),
-  ('ITEM-004', 'ORD-003', '20 L Can', 10, 10, 40.00, 400.00),
-  ('ITEM-005', 'ORD-004', '20 L Can', 50, 50, 40.00, 2000.00)
-ON CONFLICT (id) DO NOTHING;
+  ('ORD-001', '20 L Can', 15, 15, 40.00, 1),
+  ('ORD-002', '1 L Bottle', 5, 60, 108.00, 12),
+  ('ORD-002', '500 ml Bottle', 4, 96, 125.00, 24),
+  ('ORD-003', '20 L Can', 10, 10, 40.00, 1),
+  ('ORD-004', '20 L Can', 50, 50, 40.00, 1);
 
 
 -- --------------------------------------------------------------------
@@ -209,25 +230,27 @@ ON CONFLICT (id) DO NOTHING;
 -- --------------------------------------------------------------------
 INSERT INTO public.trips (
   id,
-  trip_no,
   vehicle_id,
   driver_id,
   trip_date,
   status,
   start_odometer,
   loaded_at,
-  load_items
+  supervisor_id,
+  notes,
+  created_by
 )
 VALUES (
   'TR-DEMO-101',
-  'TR-26-001',
   'VEH-01',
   'EMP-001',
   (now() at time zone 'Asia/Kolkata')::date,
   'on_route',
   45210,
   now() - interval '2 hours',
-  '[{"product_name":"20 L Can","cases":35,"bottles":35},{"product_name":"1 L Bottle","cases":10,"bottles":120},{"product_name":"500 ml Bottle","cases":10,"bottles":240}]'::jsonb
+  'MGR-001',
+  'Morning town delivery circle',
+  'c1000000-0000-0000-0000-000000000001'
 )
 ON CONFLICT (id) DO UPDATE SET
   driver_id = EXCLUDED.driver_id,
@@ -235,45 +258,41 @@ ON CONFLICT (id) DO UPDATE SET
   trip_date = EXCLUDED.trip_date;
 
 -- Stops on Trip 101:
-INSERT INTO public.trip_stops (
-  id,
-  trip_id,
-  stop_no,
-  customer_id,
-  order_id,
-  planned_cases,
-  planned_bottles,
-  status,
-  items
-)
+INSERT INTO public.trip_stops (trip_id, stop_sequence, customer_id, order_id, result)
 VALUES
-  -- Stop 1: Sri Lakshmi Hotel (Coordinates available, turn-by-turn ready)
-  ('TS-101-1', 'TR-DEMO-101', 1, 'CUST-001', 'ORD-001', 15, 15, 'pending',
-   '[{"product_name":"20 L Can","cases":15,"bottles":15,"rate":40.00}]'::jsonb),
+  ('TR-DEMO-101', 1, 'CUST-001', 'ORD-001', 'pending'),
+  ('TR-DEMO-101', 2, 'CUST-002', 'ORD-002', 'pending'),
+  ('TR-DEMO-101', 3, 'CUST-008', 'ORD-003', 'pending')
+ON CONFLICT (trip_id, stop_sequence) DO UPDATE SET
+  customer_id = EXCLUDED.customer_id,
+  order_id = EXCLUDED.order_id,
+  result = EXCLUDED.result;
 
-  -- Stop 2: Ramesh Enterprises Mart (Coordinates available)
-  ('TS-101-2', 'TR-DEMO-101', 2, 'CUST-002', 'ORD-002', 9, 156, 'pending',
-   '[{"product_name":"1 L Bottle","cases":5,"bottles":60,"rate":108.00},{"product_name":"500 ml Bottle","cases":4,"bottles":96,"rate":125.00}]'::jsonb),
+-- Stop items linked to trip_stops:
+DELETE FROM public.trip_stop_items WHERE trip_stop_id IN (
+  SELECT id FROM public.trip_stops WHERE trip_id = 'TR-DEMO-101'
+);
 
-  -- Stop 3: Sai Residency (Unmapped coordinates -> tests "Capture GPS" flow)
-  ('TS-101-3', 'TR-DEMO-101', 3, 'CUST-008', 'ORD-003', 10, 10, 'pending',
-   '[{"product_name":"20 L Can","cases":10,"bottles":10,"rate":40.00}]'::jsonb)
-ON CONFLICT (id) DO UPDATE SET
-  status = EXCLUDED.status,
-  customer_id = EXCLUDED.customer_id;
+INSERT INTO public.trip_stop_items (trip_stop_id, product_name, planned_cases, planned_bottles, rate_per_case)
+SELECT s.id, '20 L Can', 15, 15, 40.00
+FROM public.trip_stops s WHERE s.trip_id = 'TR-DEMO-101' AND s.stop_sequence = 1;
 
--- Insert corresponding stop item records in trip_stop_items:
-INSERT INTO public.trip_stop_items (id, trip_stop_id, product_name, planned_cases, planned_bottles, rate_per_case)
-VALUES
-  ('TSI-101-1-1', 'TS-101-1', '20 L Can', 15, 15, 40.00),
-  ('TSI-101-2-1', 'TS-101-2', '1 L Bottle', 5, 60, 108.00),
-  ('TSI-101-2-2', 'TS-101-2', '500 ml Bottle', 4, 96, 125.00),
-  ('TSI-101-3-1', 'TS-101-3', '20 L Can', 10, 10, 40.00)
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO public.trip_stop_items (trip_stop_id, product_name, planned_cases, planned_bottles, rate_per_case)
+SELECT s.id, '1 L Bottle', 5, 60, 108.00
+FROM public.trip_stops s WHERE s.trip_id = 'TR-DEMO-101' AND s.stop_sequence = 2;
+
+INSERT INTO public.trip_stop_items (trip_stop_id, product_name, planned_cases, planned_bottles, rate_per_case)
+SELECT s.id, '500 ml Bottle', 4, 96, 125.00
+FROM public.trip_stops s WHERE s.trip_id = 'TR-DEMO-101' AND s.stop_sequence = 2;
+
+INSERT INTO public.trip_stop_items (trip_stop_id, product_name, planned_cases, planned_bottles, rate_per_case)
+SELECT s.id, '20 L Can', 10, 10, 40.00
+FROM public.trip_stops s WHERE s.trip_id = 'TR-DEMO-101' AND s.stop_sequence = 3;
 
 
 -- --------------------------------------------------------------------
 -- 10. ATTENDANCE SITES & TODAY'S ATTENDANCE
+-- Columns: id, att_date, employee_id, status, time_in, site_id, site_name, distance_m, late, source
 -- --------------------------------------------------------------------
 INSERT INTO public.attendance_sites (id, name, code, lat, lng, radius_m)
 VALUES
@@ -286,17 +305,22 @@ ON CONFLICT (id) DO UPDATE SET
   lng = EXCLUDED.lng,
   radius_m = EXCLUDED.radius_m;
 
-INSERT INTO public.attendance (id, employee_id, date, status, check_in, site_id, site_name, distance_m, late, source)
+INSERT INTO public.attendance (id, att_date, employee_id, status, time_in, site_id, site_name, distance_m, late, source)
 VALUES
-  ('ATT-TODAY-01', 'EMP-001', (now() at time zone 'Asia/Kolkata')::date, 'Present', '07:45:00', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 14.5, false, 'qr_geofence'),
-  ('ATT-TODAY-02', 'EMP-002', (now() at time zone 'Asia/Kolkata')::date, 'Present', '07:55:00', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 22.0, false, 'qr_geofence'),
-  ('ATT-TODAY-03', 'EMP-003', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:00:00', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 8.2, false, 'qr_geofence'),
-  ('ATT-TODAY-04', 'EMP-004', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:15:00', 'SITE-GODOWN1', 'Godown 1 (SS Point 1 - Bypass)', 18.0, false, 'qr_geofence')
-ON CONFLICT (id) DO NOTHING;
+  ('ATT-TODAY-01', (now() at time zone 'Asia/Kolkata')::date, 'EMP-001', 'Present', '07:45', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 14, false, 'banner'),
+  ('ATT-TODAY-02', (now() at time zone 'Asia/Kolkata')::date, 'EMP-002', 'Present', '07:55', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 22, false, 'banner'),
+  ('ATT-TODAY-03', (now() at time zone 'Asia/Kolkata')::date, 'EMP-003', 'Present', '08:00', 'SITE-PLANT', 'Main RO Plant & Bottling Unit', 8, false, 'banner'),
+  ('ATT-TODAY-04', (now() at time zone 'Asia/Kolkata')::date, 'EMP-004', 'Present', '08:15', 'SITE-GODOWN1', 'Godown 1 (SS Point 1 - Bypass)', 18, false, 'banner')
+ON CONFLICT (id) DO UPDATE SET
+  att_date = EXCLUDED.att_date,
+  employee_id = EXCLUDED.employee_id,
+  status = EXCLUDED.status,
+  time_in = EXCLUDED.time_in;
 
 
 -- --------------------------------------------------------------------
 -- 11. STAFF PAYSLIPS (For Employee Portal Verification)
+-- Columns: id, employee_id, month_year, gross_pay, deductions, net_pay, details
 -- --------------------------------------------------------------------
 INSERT INTO public.payslips (id, employee_id, month_year, gross_pay, deductions, net_pay, details)
 VALUES
@@ -304,6 +328,10 @@ VALUES
   ('SLIP-2610-002', 'EMP-002', '2026-10', 15000.00, 300.00, 14700.00, '{"basic":11000,"allowances":4000,"esi":300}'::jsonb),
   ('SLIP-2610-003', 'EMP-003', '2026-10', 14000.00, 250.00, 13750.00, '{"basic":10000,"allowances":4000,"esi":250}'::jsonb),
   ('SLIP-2610-004', 'EMP-004', '2026-10', 13500.00, 250.00, 13250.00, '{"basic":10000,"allowances":3500,"esi":250}'::jsonb)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (employee_id, month_year) DO UPDATE SET
+  gross_pay = EXCLUDED.gross_pay,
+  deductions = EXCLUDED.deductions,
+  net_pay = EXCLUDED.net_pay,
+  details = EXCLUDED.details;
 
 COMMIT;

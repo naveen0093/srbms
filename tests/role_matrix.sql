@@ -87,20 +87,20 @@ ON CONFLICT (id) DO UPDATE SET
 -- Create Test Locations
 INSERT INTO public.locations (id, name, type)
 VALUES
-  ('LOC-P', 'Plant', 'plant'),
-  ('LOC-G1', 'Godown 1', 'godown')
+  ('LOC-P', 'Test Plant', 'plant'),
+  ('LOC-G1', 'Test Godown 1', 'godown')
 ON CONFLICT (id) DO NOTHING;
 
 -- Create Test Vehicles
-INSERT INTO public.vehicles (id, registration_no, model, is_active)
+INSERT INTO public.vehicles (id, vehicle_number, vehicle_type, active)
 VALUES
-  ('VEH-1', 'AP 39 AB 1234', 'Tata Ace', true)
+  ('VEH-1', 'AP 39 AB 1234', 'Pickup', true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Create Test Customers:
 -- CUST-TEST-1 will be on M2's open trip
 -- CUST-TEST-2 will NOT be on M2's trip
-INSERT INTO public.customers (id, name, phone, address, lat, lng, accuracy_m, credit_limit)
+INSERT INTO public.customers (id, name, phone, area, lat, lng, accuracy_m, credit_limit)
 VALUES
   ('CUST-TEST-1', 'Open Route Customer', '9848011111', 'Market Yard', 13.558312, 78.502145, 10.0, 5000.00),
   ('CUST-TEST-2', 'Unrelated Customer', '9848022222', 'Station Road', 13.561200, 78.504300, 15.0, 3000.00),
@@ -112,27 +112,26 @@ ON CONFLICT (id) DO UPDATE SET
   credit_limit = EXCLUDED.credit_limit;
 
 -- Create Open Trip for M2 (driver_id = 'M2')
-INSERT INTO public.trips (id, trip_no, vehicle_id, driver_id, trip_date, status, start_odometer)
+INSERT INTO public.trips (id, vehicle_id, driver_id, trip_date, status, start_odometer)
 VALUES
-  ('TRIP-TEST-M2', 'TR-TEST-001', 'VEH-1', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'on_route', 10000)
+  ('TRIP-TEST-M2', 'VEH-1', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'on_route', 10000)
 ON CONFLICT (id) DO UPDATE SET
   driver_id = EXCLUDED.driver_id,
   status = EXCLUDED.status;
 
 -- Add Trip Stop for CUST-TEST-1 on TRIP-TEST-M2
-INSERT INTO public.trip_stops (id, trip_id, stop_no, customer_id, status)
+INSERT INTO public.trip_stops (trip_id, stop_sequence, customer_id, result)
 VALUES
-  ('STOP-TEST-1', 'TRIP-TEST-M2', 1, 'CUST-TEST-1', 'pending')
-ON CONFLICT (id) DO UPDATE SET
-  trip_id = EXCLUDED.trip_id,
+  ('TRIP-TEST-M2', 1, 'CUST-TEST-1', 'pending')
+ON CONFLICT (trip_id, stop_sequence) DO UPDATE SET
   customer_id = EXCLUDED.customer_id,
-  status = EXCLUDED.status;
+  result = EXCLUDED.result;
 
 -- Create Attendance Records
-INSERT INTO public.attendance (id, employee_id, date, status, check_in)
+INSERT INTO public.attendance (id, employee_id, att_date, status, time_in)
 VALUES
-  ('ATT-TEST-M1', 'M1', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:00:00'),
-  ('ATT-TEST-M2', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:30:00')
+  ('ATT-TEST-M1', 'M1', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:00'),
+  ('ATT-TEST-M2', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'Present', '08:30')
 ON CONFLICT (id) DO NOTHING;
 
 -- Create Payslip Records
@@ -241,7 +240,7 @@ BEGIN
   CALL log_assert('employee', 'allow_select_own_open_trip', v_cnt = 1, 'Employee should see assigned open trip');
 
   -- 2.2 Employee sees trip stop on own open trip
-  SELECT count(*) INTO v_cnt FROM public.trip_stops WHERE id = 'STOP-TEST-1';
+  SELECT count(*) INTO v_cnt FROM public.trip_stops WHERE trip_id = 'TRIP-TEST-M2';
   CALL log_assert('employee', 'allow_select_own_trip_stops', v_cnt = 1, 'Employee should see stops on own open trip');
 
   -- 2.3 Employee CAN see customer on own open trip (CUST-TEST-1)
@@ -320,8 +319,8 @@ BEGIN
 
   -- 3.3 Manager can INSERT a new trip
   BEGIN
-    INSERT INTO public.trips (id, trip_no, vehicle_id, driver_id, trip_date, status)
-    VALUES ('TRIP-TEST-MGR-NEW', 'TR-MGR-99', 'VEH-1', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'planned');
+    INSERT INTO public.trips (id, vehicle_id, driver_id, trip_date, status)
+    VALUES ('TRIP-TEST-MGR-NEW', 'VEH-1', 'M2', (now() at time zone 'Asia/Kolkata')::date, 'planned');
     v_err := false;
   EXCEPTION WHEN OTHERS THEN
     v_err := true;
